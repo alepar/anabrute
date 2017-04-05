@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.0)
+project (anabrute)
+add_executable(anabrute anabrute.c)
+target_link_libraries(anabrute pthread)
+set_property(TARGET anabrute PROPERTY C_STANDARD 99)
