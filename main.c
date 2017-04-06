@@ -1,7 +1,13 @@
+#ifdef __APPLE__
+#include "OpenCL/opencl.h"
+#else
 #include "CL/cl.h"
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <unitypes.h>
 
 #define die_unless(val, msg) \
 if (!(val)) {\
@@ -47,7 +53,8 @@ void format_size(uint64_t size, char* dst) {
 }
 
 int main(int argc, char *argv[]) {
-    printf("Cpu cores: %d\n", num_cpu_cores());
+    const uint32_t num_cpus = num_cpu_cores();
+    printf("Cpu cores: %d\n", num_cpus);
 
     cl_platform_id platform_id;
     cl_uint num_platforms;
@@ -60,21 +67,40 @@ int main(int argc, char *argv[]) {
     clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, num_devices, device_ids, &num_devices);
     die_unless(num_devices, "no devices");
 
+    uint32_t num_gpus = 0;
+    for (int i=0; i<num_devices; i++) {
+        cl_device_type dev_type;
+        clGetDeviceInfo (device_ids[i], CL_DEVICE_TYPE, sizeof(dev_type), &dev_type, NULL);
+        if (dev_type > CL_DEVICE_TYPE_CPU) {
+            num_gpus++;
+        }
+    }
+
+    if (num_gpus) {
+        int d=0;
+        for (int s=0; s<num_devices; s++) {
+            cl_device_type dev_type;
+            clGetDeviceInfo (device_ids[s], CL_DEVICE_TYPE, sizeof(dev_type), &dev_type, NULL);
+            if (dev_type > CL_DEVICE_TYPE_CPU) {
+                device_ids[d++] = device_ids[s];
+            }
+        }
+        num_devices = num_gpus;
+    }
+
     char char_buf[1024];
-    printf("OpenCL devices: ");
     for (int i=0; i<num_devices; i++) {
         cl_ulong local_mem; char local_mem_str[32];
         cl_ulong global_mem; char global_mem_str[32];
 
-        clGetDeviceInfo(device_ids[0], CL_DEVICE_GLOBAL_MEM_SIZE, 8, &global_mem, NULL);
-        clGetDeviceInfo(device_ids[0], CL_DEVICE_LOCAL_MEM_SIZE, 8, &local_mem, NULL);
+        clGetDeviceInfo(device_ids[i], CL_DEVICE_GLOBAL_MEM_SIZE, 8, &global_mem, NULL);
+        clGetDeviceInfo(device_ids[i], CL_DEVICE_LOCAL_MEM_SIZE, 8, &local_mem, NULL);
         clGetDeviceInfo (device_ids[i], CL_DEVICE_NAME, 1024, char_buf, NULL);
 
         format_size(global_mem, global_mem_str);
         format_size(local_mem, local_mem_str);
-        printf("%s (g:%s l:%s), ", char_buf, global_mem_str, local_mem_str);
+        printf("Using OpenCL device: %s (g:%s l:%s)\n", char_buf, global_mem_str, local_mem_str);
     }
-    printf("\n");
 
     const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
 
@@ -108,7 +134,7 @@ int main(int argc, char *argv[]) {
     cl_mem b_buf = clCreateBuffer (ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof (b), b, &errcode);
     die_unless(errcode == CL_SUCCESS, "failed to copy b");
 
-    cl_command_queue queue = clCreateCommandQueueWithProperties(ctx, device_ids[0], NULL, &errcode);
+    cl_command_queue queue = clCreateCommandQueue(ctx, device_ids[0], NULL, &errcode);
     die_unless(errcode == CL_SUCCESS, "failed to create command queue");
 
     clSetKernelArg(kernel, 0, sizeof (cl_mem), &a_buf);
@@ -124,9 +150,9 @@ int main(int argc, char *argv[]) {
     errcode = clEnqueueReadBuffer (queue, b_buf, CL_TRUE, 0, sizeof (float) * 1024, b_res, 0, NULL, NULL);
     die_unless(errcode == CL_SUCCESS, "failed to read buffer");
 
-    for(int i=0; i<1024; i++ ) {
+/*    for(int i=0; i<1024; i++ ) {
         printf("%.2f\t%.2f\t%.2f\n", a[i], b[i], b_res[i]);
-    }
+    }*/
 
     clReleaseCommandQueue (queue);
 
