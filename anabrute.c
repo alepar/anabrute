@@ -5,9 +5,12 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <unitypes.h>
 #include <stdbool.h>
 #include <stdlib.h>
+
+#ifdef __APPLE__
+    #include <unitypes.h>
+#endif
 
 #define CHARCOUNT 12
 #define MAX_DICT_SIZE 2048
@@ -146,11 +149,8 @@ void char_counts_copy(char_counts *src, char_counts *dst) {
     }
 }
 
-int max_words = 0;
-
 uint64_t recurse(char_counts remainder, int curchar, int curdictidx, int stack_len) {
-/*
-    printf("\t%d\t%d\t%d\t%d\t||\t", remainder.length, curchar, curdictidx, stack_len);
+/*    printf("\t%d\t%d\t%d\t%d\t||\t", remainder.length, curchar, curdictidx, stack_len);
     for (int i=0; i<stack_len; i++) {
         printf("%s", stack[i].ccs->strings[0]);
         if (stack[i].count > 1) {
@@ -159,8 +159,7 @@ uint64_t recurse(char_counts remainder, int curchar, int curdictidx, int stack_l
             printf(" ");
         }
     }
-    printf("\n");
-*/
+    printf("\n");*/
 
     if (remainder.length == 0) {
         int word_count = 0;
@@ -175,19 +174,6 @@ uint64_t recurse(char_counts remainder, int curchar, int curdictidx, int stack_l
             for(int ii=0; ii<stack[i].count; ii++) {
                 total *= stack[i].ccs->strings_len;
             }
-
-            if (word_count > max_words) {
-                printf("%s", stack[i].ccs->strings[0]);
-                if (stack[i].count > 1) {
-                    printf("*%d ", stack[i].count);
-                } else {
-                    printf(" ");
-                }
-            }
-        }
-        if (word_count > max_words) {
-            printf("\n");
-            max_words = word_count;
         }
 
         return total;
@@ -231,7 +217,7 @@ int main(int argc, char *argv[]) {
     char_counts seed_phrase;
     char_counts_create(seed_phrase_str, &seed_phrase);
 
-    FILE *dictFile = fopen("/workplace/parfenov/anabrute/wordlist.txt", "r");
+    FILE *dictFile = fopen("wordlist.txt", "r");
     if (!dictFile) {
         fprintf(stderr, "dict file not found!\n");
         return -1;
@@ -244,10 +230,21 @@ int main(int argc, char *argv[]) {
     char *buflines[] = {buf1, buf2};
     uint8_t lineidx = 0;
 
+    int max_strings_len = 0;
+
     while(fgets(buflines[lineidx], 100, dictFile) != NULL) {
-        buflines[lineidx][strlen(buflines[lineidx])-1] = 0;
+        char *const str = buflines[lineidx];
+        const size_t len = strlen(str);
+        if (str[len-1] == '\n' || str[len-1] == '\r') {
+            str[len-1] = 0;
+        }
+        if (str[len-2] == '\n' || str[len-2] == '\r') {
+            str[len-2] = 0;
+        }
+
         if (strcmp(buflines[0], buflines[1])) {
-            if (char_counts_strings_create(buflines[lineidx], &dict[dict_length])) {
+            lineidx = 1-lineidx;
+            if (char_counts_strings_create(str, &dict[dict_length])) {
                 continue;
             }
 
@@ -267,14 +264,19 @@ int main(int argc, char *argv[]) {
                     }
                 }
 
-                if (char_counts_strings_addstring(&dict[i], buflines[lineidx])) {
+                if (char_counts_strings_addstring(&dict[i], str)) {
                     fprintf(stderr, "strings overflow! %d", dict[i].strings_len);
                     return -3;
                 }
+
+                if (dict[i].strings_len > max_strings_len) {
+                    max_strings_len = dict[i].strings_len;
+                }
             }
         }
-        lineidx = 1-lineidx;
     }
+
+    printf("max_strings_len %d\n", max_strings_len);
 
     for (int i=0; i<dict_length; i++) {
         for (int ci=0; ci<CHARCOUNT; ci++) {
