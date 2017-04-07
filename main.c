@@ -1,15 +1,16 @@
-#ifdef __APPLE__
-#include "OpenCL/opencl.h"
-#else
-#include "CL/cl.h"
-#endif
-
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <unitypes.h>
 #include <time.h>
-#include <event.h>
+
+#ifdef __APPLE__
+    #include "OpenCL/opencl.h"
+    #include <unitypes.h>
+    #include <event.h>
+#else
+    #include "CL/cl.h"
+    #include <sys/time.h>
+#endif
 
 #define die_iferr(val, msg) \
 if (val) {\
@@ -132,25 +133,17 @@ int main(int argc, char *argv[]) {
     }
     printf("\n");
 
-    const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
-
-    cl_int errcode;
-    cl_context ctx = clCreateContext (ctx_props, num_devices, device_ids, NULL, NULL, &errcode);
-    die_iferr(errcode, "failed to create context");
-
-    // loading kernel
     char *const kernel_source = read_file("kernels/md5.cl");
     die_iferr(!kernel_source, "failed to read kernel source");
     size_t lengths[] = {strlen(kernel_source)};
     const char *sources[] = {kernel_source};
-    cl_program program = clCreateProgramWithSource(ctx, 1, sources, lengths, &errcode);
-    die_iferr(errcode, "failed to create program");
-    errcode = clBuildProgram (program, num_devices, device_ids, NULL, NULL, NULL);
-    die_iferr(errcode, "failed to build program");
-    cl_kernel md5_kernel = clCreateKernel (program, "md5", &errcode);
-    die_iferr(errcode, "failed to create kernel");
 
-    // loading data
+    const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
+    cl_context ctxs[num_devices];
+
+    cl_program programs[num_devices];
+    cl_kernel md5_kernels[num_devices];
+
     uint32_t data_info[2];
     uint32_t keys[16];
     uint32_t hashes[4];
@@ -158,52 +151,84 @@ int main(int argc, char *argv[]) {
     data_info[0] = 36; // KEY_LENGTH, 9 uints per key
     data_info[1] = 1;  // num_keys
     char *key = "tyranous pluto twits";
-    memcpy(keys, key, strlen(key)+1);
+    memcpy(keys, key, strlen(key) + 1);
 
-    cl_mem data_info_buf = clCreateBuffer (ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof (data_info), data_info, &errcode);
-    die_iferr(errcode, "failed to create data_info_buf");
-    cl_mem keys_buf = clCreateBuffer (ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof (keys), keys, &errcode);
-    die_iferr(errcode, "failed to create keys_buf");
-    cl_mem hashes_buf = clCreateBuffer (ctx, CL_MEM_WRITE_ONLY | CL_MEM_COPY_HOST_PTR, sizeof (hashes), hashes, &errcode);
-    die_iferr(errcode, "failed to create hashes_buf");
+    cl_mem data_info_bufs[num_devices];
+    cl_mem keys_bufs[num_devices];
+    cl_mem hashes_bufs[num_devices];
 
-    // running kernel
-    cl_command_queue queue = clCreateCommandQueue(ctx, device_ids[0], NULL, &errcode);
-    die_iferr(errcode, "failed to create command queue");
+    cl_command_queue queue[num_devices];
 
-    clSetKernelArg(md5_kernel, 0, sizeof (cl_mem), &data_info_buf);
-    clSetKernelArg(md5_kernel, 1, sizeof (cl_mem), &keys_buf);
-    clSetKernelArg(md5_kernel, 2, sizeof (cl_mem), &hashes_buf);
+    cl_int errcode;
+    for (int i=0; i<num_devices; i++) {
+        ctxs[i] = clCreateContext(ctx_props, 1, &device_ids[i], NULL, NULL, &errcode);
+        die_iferr(errcode, "failed to create context");
 
+        // loading kernel
+        programs[i] = clCreateProgramWithSource(ctxs[i], 1, sources, lengths, &errcode);
+        die_iferr(errcode, "failed to create program");
+        errcode = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
+        die_iferr(errcode, "failed to build program");
 
-    struct timeval t0;
-    gettimeofday(&t0, 0);
-    const size_t globalWorkSize [] = { 1024, 1024, 1024 };
-    errcode = clEnqueueNDRangeKernel(queue, md5_kernel, 3, NULL, globalWorkSize, NULL, 0, NULL, NULL);
-    die_iferr(errcode, "failed to enqueue kernel");
+        md5_kernels[i] = clCreateKernel(programs[i], "md5", &errcode);
+        die_iferr(errcode, "failed to create kernel");
 
-    errcode = clEnqueueReadBuffer (queue, hashes_buf, CL_TRUE, 0, sizeof (hashes), hashes, 0, NULL, NULL);
-    die_iferr(errcode, "failed to read hashes");
+        data_info_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(data_info), data_info, &errcode);
+        die_iferr(errcode, "failed to create data_info_buf");
+        keys_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(keys), keys, &errcode);
+        die_iferr(errcode, "failed to create keys_buf");
+        hashes_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(hashes), hashes, &errcode);
+        die_iferr(errcode, "failed to create hashes_buf");
 
-    struct timeval t1;
-    gettimeofday(&t1, 0);
-    long elapsed_millis = (t1.tv_sec-t0.tv_sec)*1000 + (t1.tv_usec-t0.tv_usec)/1000;
-    format_bignum(1000L*1024*1024*1024/elapsed_millis, char_buf, 1000);
-    printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis/10/100.0, char_buf);
+        clSetKernelArg(md5_kernels[i], 0, sizeof (cl_mem), &data_info_bufs[i]);
+        clSetKernelArg(md5_kernels[i], 1, sizeof (cl_mem), &keys_bufs[i]);
+        clSetKernelArg(md5_kernels[i], 2, sizeof (cl_mem), &hashes_bufs[i]);
+
+        queue[i] = clCreateCommandQueue(ctxs[i], device_ids[i], NULL, &errcode);
+        die_iferr(errcode, "failed to create command queue");
+    }
+
+    while(1) {
+        struct timeval t0;
+        gettimeofday(&t0, 0);
+
+        const size_t globalWorkSize[] = {32, 1024, 1024};
+        cl_event evt[num_devices];
+        for (int i=0; i<num_devices; i++) {
+            errcode = clEnqueueNDRangeKernel(queue[i], md5_kernels[i], 3, NULL, globalWorkSize, NULL, 0, NULL, &evt[i]);
+            die_iferr(errcode, "failed to enqueue kernel");
+        }
+
+        errcode = clWaitForEvents(num_devices, evt);
+        die_iferr(errcode, "failed to wait for completion");
+
+//        errcode = clEnqueueReadBuffer (queue, hashes_buf, CL_TRUE, 0, sizeof (hashes), hashes, 0, NULL, NULL);
+//        die_iferr(errcode, "failed to read hashes");
+
+        struct timeval t1;
+        gettimeofday(&t1, 0);
+        long elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
+
+        format_bignum(1000L * 500 * globalWorkSize[0] * globalWorkSize[1] * globalWorkSize[2] * num_devices / elapsed_millis, char_buf, 1000);
+        printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
+    }
 
     hash_to_ascii(hashes, char_buf);
     printf("hash: %s\n", char_buf);
 
-    clReleaseCommandQueue (queue);
+    for (int i=0; i<num_devices; i++) {
+        clReleaseCommandQueue (queue[i]);
 
-    clReleaseMemObject(data_info_buf);
-    clReleaseMemObject(keys_buf);
-    clReleaseMemObject(hashes_buf);
+        clReleaseMemObject(data_info_bufs[i]);
+        clReleaseMemObject(keys_bufs[i]);
+        clReleaseMemObject(hashes_bufs[i]);
 
-    clReleaseKernel(md5_kernel);
-    clReleaseProgram(program);
+        clReleaseKernel(md5_kernels[i]);
 
-    clReleaseContext(ctx);
+        clReleaseProgram(programs[i]);
+
+        clReleaseContext(ctxs[i]);
+    }
 
     return 0;
 }
