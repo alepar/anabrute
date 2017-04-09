@@ -9,14 +9,7 @@
 #include <stdlib.h>
 
 #include "anatypes.h"
-
-uint64_t fact(int x) {
-    uint64_t total = 1;
-    for (int i=2; i<=x; i++) {
-        total *= i;
-    }
-    return total;
-}
+#include "fact.h"
 
 stack_item stack[20];
 char_counts_strings* dict_by_char[CHARCOUNT][MAX_DICT_SIZE];
