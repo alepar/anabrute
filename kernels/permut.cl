@@ -37,7 +37,7 @@ __kernel void permut(__global const permut_template *permut_templates, __global 
     __global const permut_template *tmpl = &permut_templates[0];
 
     char cur_str[38];
-    ulong a = id*1024+1;
+    ulong a = id*16384+1;
     char all_strs[38];
     for (uchar i=0; i<38; i++) {
         all_strs[i] = tmpl->all_strs[i];
@@ -163,6 +163,6 @@ __kernel void permut(__global const permut_template *permut_templates, __global 
         }
 
         counter++;
-    } while (counter<1024);
+    } while (counter<16384);
 
 }

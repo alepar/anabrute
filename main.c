@@ -236,7 +236,7 @@ int main(int argc, char *argv[]) {
         gettimeofday(&t1, 0);
         long elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
 
-        format_bignum(1000L * 1024 * globalWorkSize[0] /** globalWorkSize[1] * globalWorkSize[2]*/ * num_devices / elapsed_millis, char_buf, 1000);
+        format_bignum(1000L * 16384 * globalWorkSize[0] /** globalWorkSize[1] * globalWorkSize[2]*/ * num_devices / elapsed_millis, char_buf, 1000);
         printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
 //    }
 
