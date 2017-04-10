@@ -130,10 +130,13 @@ void md5(const uint *key, __global uint *hash)
 // === permutations ===
 // ====================
 
+#define MAX_STR_LENGTH 40
+#define MAX_OFFSETS_LENGTH 20
+
 typedef struct {
-    char all_strs[38]; // TODO make 40 // 36 max
-    char offsets[18];  // TODO make 20 // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
-    ulong start_from;  // TODO make uint
+    uint all_strs[MAX_STR_LENGTH/4];
+    uint offsets[MAX_OFFSETS_LENGTH/4];  // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
+    uint start_from;
 } permut_template;
 
 ulong fact(uchar x) {
@@ -170,25 +173,23 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
     uint key[16];
     ulong a = id*iters_per_item+1;
 
-    // TODO read as uints
-    char all_strs[38];
-    for (uchar i=0; i<38; i++) {
-        all_strs[i] = tmpl->all_strs[i];
+    char all_strs[MAX_STR_LENGTH];
+    uint *all_strs_uint = all_strs; // read as uints
+    for (uchar i=0; i<MAX_STR_LENGTH/4; i++) {
+        all_strs_uint[i] = tmpl->all_strs[i];
     }
 
-    // TODO read as uints
     uchar offsets_len;
-    char offsets[18];
-    for (offsets_len=0; offsets_len<18; offsets_len++) {
-        offsets[offsets_len] = tmpl->offsets[offsets_len];
-        if (!offsets[offsets_len]) {
-            break;
-        }
+    char offsets[MAX_OFFSETS_LENGTH];
+    uint *offsets_uint = offsets; // read as uints
+    for (offsets_len=0; offsets_len<MAX_OFFSETS_LENGTH/4; offsets_len++) {
+        offsets_uint[offsets_len] = tmpl->offsets[offsets_len];
     }
+    for (offsets_len=0; offsets_len<MAX_OFFSETS_LENGTH && offsets[offsets_len]; offsets_len++);
 
     if (a>1) {
         uchar unpicked_len = 0;
-        char unpicked[18];
+        char unpicked[MAX_OFFSETS_LENGTH];
         uchar idx_unp=0;
 
         for (uchar i=0; i<offsets_len; i++) {

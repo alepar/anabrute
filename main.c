@@ -12,10 +12,13 @@
     #include <sys/time.h>
 #endif
 
+#define MAX_STR_LENGTH 40
+#define MAX_OFFSETS_LENGTH 20
+
 typedef struct {
-    char all_strs[38]; // 36 max
-    char offsets[18]; // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
-    uint64_t start_from;
+    char all_strs[MAX_STR_LENGTH];
+    char offsets[MAX_OFFSETS_LENGTH];  // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
+    uint start_from;  // TODO make uint
 } permut_template;
 
 #define die_iferr(val, msg) \
@@ -90,13 +93,13 @@ permut_template* permut_templates_create(const int num_templates) {
         return NULL;
     }
 
-    char all_strs[38] = "x\0a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0k\0l\0m\0";
-    char offsets[18] = {-1, 3, 5, 7, 9, -1, 11, 13, 15, 17, 19, 21, 23, -1, 25, 27};
+    char all_strs[MAX_STR_LENGTH] = "x\0a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0k\0l\0m\0";
+    char offsets[MAX_OFFSETS_LENGTH] = {-1, 3, 5, 7, 9, -1, 11, 13, 15, 17, 19, 21, 23, -1, 25, 27};
 
     for (int i=0; i<num_templates; i++) {
-        templates[i].start_from = 1024L*i+1;
-        memcpy(templates[i].all_strs, all_strs, 38);
-        memcpy(templates[i].offsets, offsets, 18);
+        templates[i].start_from = 1024*i+1;
+        memcpy(templates[i].all_strs, all_strs, MAX_STR_LENGTH);
+        memcpy(templates[i].offsets, offsets, MAX_OFFSETS_LENGTH);
     }
 
     return templates;
@@ -165,7 +168,8 @@ int main(int argc, char *argv[]) {
     const uint32_t iters_per_item = 256;
     permut_template *permut_templates = permut_templates_create(num_templates);
     die_iferr(!permut_templates, "failed to create permut_templates");
-    uint32_t *hashes = malloc(num_templates*iters_per_item*4);
+    const size_t hashes_len = num_templates * iters_per_item * 4 * sizeof(uint32_t);
+    uint32_t *hashes = malloc(hashes_len);
     die_iferr(!hashes, "failed to allocate hashes");
 
     cl_mem permut_templates_bufs[num_devices];
@@ -200,7 +204,7 @@ int main(int argc, char *argv[]) {
 
         permut_templates_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_template), permut_templates, &errcode);
         die_iferr(errcode, "failed to create permut_templates_bufs");
-        hashes_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY, num_templates*iters_per_item*4, NULL, &errcode);
+        hashes_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY, hashes_len, NULL, &errcode);
         die_iferr(errcode, "failed to create hashes_bufs");
 
         clSetKernelArg(permut_kernels[i], 0, sizeof (cl_mem), &permut_templates_bufs[i]);
@@ -234,7 +238,7 @@ int main(int argc, char *argv[]) {
         printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
 //    }
 
-    errcode = clEnqueueReadBuffer (queue[0], hashes_bufs[0], CL_TRUE, 0, num_templates*iters_per_item*4, hashes, 0, NULL, NULL);
+    errcode = clEnqueueReadBuffer (queue[0], hashes_bufs[0], CL_TRUE, 0, hashes_len, hashes, 0, NULL, NULL);
     die_iferr(errcode, "failed to read hashes");
 
     char hash_ascii_buf[33];
