@@ -24,11 +24,6 @@ if (val) {\
     return val;\
 }
 
-uint32_t num_cpu_cores() {
-    // posix-way
-    return (uint32_t) sysconf(_SC_NPROCESSORS_ONLN);
-}
-
 char* read_file(const char* filename) {
     FILE *fd = fopen(filename, "r");
     if (fd == NULL) {
@@ -108,9 +103,6 @@ permut_template* permut_templates_create(const int num_templates) {
 }
 
 int main(int argc, char *argv[]) {
-    const uint32_t num_cpus = num_cpu_cores();
-    printf("Cpu cores: %d\n", num_cpus);
-
     cl_platform_id platform_id;
     cl_uint num_platforms;
     clGetPlatformIDs (1, &platform_id, &num_platforms);
@@ -169,7 +161,7 @@ int main(int argc, char *argv[]) {
     cl_program programs[num_devices];
     cl_kernel permut_kernels[num_devices];
 
-    const int num_templates = 48*1024; // 13!
+    const int num_templates = 24*1024; // 13!
     permut_template *permut_templates = permut_templates_create(num_templates);
     die_iferr(!permut_templates, "failed to create permut_templates");
     char *permut_str = malloc(num_templates*1024*38);
