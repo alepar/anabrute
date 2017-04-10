@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #define ulong uint64_t
+#define ushort uint16_t
 #define uchar uint8_t
 #define __global
 #define __kernel
@@ -202,19 +203,14 @@ permut_template* permut_templates_create(const int num_templates) {
 }
 
 int main(int argc, char *argv[]) {
-    const int num_templates = 1*1024; // 13!
-    permut_template *permut_templates = permut_templates_create(num_templates);
-    char *permut_str = malloc(num_templates*1024*38);
-
-    global_id =0 ;
-    for (global_id=0; global_id<num_templates; global_id++) {
-        permut(permut_templates, permut_str);
+    const char *key = "tyranous pluto twits";
+    uint32_t *ints = (uint32_t *) key;
+    
+    for (int i=0; i<5; i++) {
+        for (int j=0; j<4; j++) {
+            uint32_t n = ints[i];
+            printf("%c\n", (n >> j*8) & 0xff);
+        }
+        printf("\n");
     }
-
-
-    FILE *f = fopen("perms.txt", "w");
-    for (int i=0; i<1024*1024; i++) {
-        fprintf(f, "%s\n", &permut_str[i*38]);
-    }
-    fclose(f);
 }
