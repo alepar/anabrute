@@ -161,10 +161,11 @@ int main(int argc, char *argv[]) {
     cl_program programs[num_devices];
     cl_kernel permut_kernels[num_devices];
 
-    const int num_templates = 24*1024; // 13!
+    const uint32_t num_templates = 1*1024; // 13!
+    const uint32_t iters_per_item = 16384;
     permut_template *permut_templates = permut_templates_create(num_templates);
     die_iferr(!permut_templates, "failed to create permut_templates");
-    char *permut_str = malloc(num_templates*1024*38);
+    char *permut_str = malloc(num_templates*iters_per_item*38);
     die_iferr(!permut_str, "failed to allocate permut_str");
 
     cl_mem permut_templates_bufs[num_devices];
@@ -199,11 +200,12 @@ int main(int argc, char *argv[]) {
 
         permut_templates_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_template), permut_templates, &errcode);
         die_iferr(errcode, "failed to create permut_templates_bufs");
-        permut_str_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY, num_templates*1024*38, NULL, &errcode);
+        permut_str_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY, num_templates*iters_per_item*38, NULL, &errcode);
         die_iferr(errcode, "failed to create permut_str_bufs");
 
         clSetKernelArg(permut_kernels[i], 0, sizeof (cl_mem), &permut_templates_bufs[i]);
-        clSetKernelArg(permut_kernels[i], 1, sizeof (cl_mem), &permut_str_bufs[i]);
+        clSetKernelArg(permut_kernels[i], 1, sizeof (iters_per_item), &iters_per_item);
+        clSetKernelArg(permut_kernels[i], 2, sizeof (cl_mem), &permut_str_bufs[i]);
 
         queue[i] = clCreateCommandQueue(ctxs[i], device_ids[i], NULL, &errcode);
         die_iferr(errcode, "failed to create command queue");
@@ -228,20 +230,18 @@ int main(int argc, char *argv[]) {
         gettimeofday(&t1, 0);
         long elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
 
-        format_bignum(1000L * 16384 * globalWorkSize[0] /** globalWorkSize[1] * globalWorkSize[2]*/ * num_devices / elapsed_millis, char_buf, 1000);
+        format_bignum(1000L * iters_per_item * globalWorkSize[0] /** globalWorkSize[1] * globalWorkSize[2]*/ * num_devices / elapsed_millis, char_buf, 1000);
         printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
 //    }
 
-//    errcode = clEnqueueReadBuffer (queue[0], permut_str_bufs[0], CL_TRUE, 0, num_templates*1024*38, permut_str, 0, NULL, NULL);
-//    die_iferr(errcode, "failed to read hashes");
+    errcode = clEnqueueReadBuffer (queue[0], permut_str_bufs[0], CL_TRUE, 0, num_templates*iters_per_item*38, permut_str, 0, NULL, NULL);
+    die_iferr(errcode, "failed to read hashes");
 
-/*
     FILE *f = fopen("perms_gpu.txt", "w");
-    for (int i=0; i<num_templates*1024; i++) {
+    for (int i=0; i<num_templates*iters_per_item; i++) {
         fprintf(f, "%s\n", &permut_str[i*38]);
     }
     fclose(f);
-*/
 
     for (int i=0; i<num_devices; i++) {
         clReleaseCommandQueue (queue[i]);

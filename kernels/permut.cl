@@ -31,13 +31,13 @@ ulong fact(uchar x) {
     }
 }
 
-__kernel void permut(__global const permut_template *permut_templates, __global char *permut_str) {
+__kernel void permut(__global const permut_template *permut_templates, const uint iters_per_item, __global char *permut_str) {
     int id = get_global_id(0);
 //    __global const permut_template *tmpl = &permut_templates[id];
     __global const permut_template *tmpl = &permut_templates[0];
 
     char cur_str[38];
-    ulong a = id*16384+1;
+    ulong a = id*iters_per_item+1;
     char all_strs[38];
     for (uchar i=0; i<38; i++) {
         all_strs[i] = tmpl->all_strs[i];
@@ -110,11 +110,11 @@ __kernel void permut(__global const permut_template *permut_templates, __global 
         cur_str[wcs-1] = 0;
 
         // write it out
-//        __global char *ds = &permut_str[(id*1024+counter)*38];
-//        uchar ic=0;
-//        while(cur_str[ic]) {
-//            *(ds++) = cur_str[ic++];
-//        }
+        __global char *ds = &permut_str[(id*iters_per_item+counter)*38];
+        uchar ic=0;
+        while(cur_str[ic]) {
+            *(ds++) = cur_str[ic++];
+        }
 
         // find next if possible
         char k = -1;
@@ -163,6 +163,6 @@ __kernel void permut(__global const permut_template *permut_templates, __global 
         }
 
         counter++;
-    } while (counter<16384);
+    } while (counter<iters_per_item);
 
 }
