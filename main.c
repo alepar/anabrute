@@ -12,6 +12,12 @@
     #include <sys/time.h>
 #endif
 
+typedef struct {
+    char all_strs[38]; // 36 max
+    char offsets[18]; // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
+    uint64_t start_from;
+} permut_template;
+
 #define die_iferr(val, msg) \
 if (val) {\
     fprintf(stderr, "FATAL: %d - %s\n", val, msg);\
@@ -82,6 +88,25 @@ void hash_to_ascii(uint32_t *hash_ints, char *buf) {
     buf[di] = 0;
 }
 
+permut_template* permut_templates_create(const int num_templates) {
+    permut_template *templates = malloc(num_templates*sizeof(permut_template));
+
+    if (templates == NULL) {
+        return NULL;
+    }
+
+    char all_strs[38] = "x\0a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0k\0l\0m\0";
+    char offsets[18] = {-1, 3, 5, 7, 9, -1, 11, 13, 15, 17, 19, 21, 23, -1, 25, 27};
+
+    for (int i=0; i<num_templates; i++) {
+        templates[i].start_from = 1024L*i+1;
+        memcpy(templates[i].all_strs, all_strs, 38);
+        memcpy(templates[i].offsets, offsets, 18);
+    }
+
+    return templates;
+}
+
 int main(int argc, char *argv[]) {
     const uint32_t num_cpus = num_cpu_cores();
     printf("Cpu cores: %d\n", num_cpus);
@@ -133,7 +158,7 @@ int main(int argc, char *argv[]) {
     }
     printf("\n");
 
-    char *const kernel_source = read_file("kernels/md5.cl");
+    char *const kernel_source = read_file("kernels/permut.cl");
     die_iferr(!kernel_source, "failed to read kernel source");
     size_t lengths[] = {strlen(kernel_source)};
     const char *sources[] = {kernel_source};
@@ -142,20 +167,16 @@ int main(int argc, char *argv[]) {
     cl_context ctxs[num_devices];
 
     cl_program programs[num_devices];
-    cl_kernel md5_kernels[num_devices];
+    cl_kernel permut_kernels[num_devices];
 
-    uint32_t data_info[2];
-    uint32_t keys[16];
-    uint32_t hashes[4];
+    const int num_templates = 48*1024; // 13!
+    permut_template *permut_templates = permut_templates_create(num_templates);
+    die_iferr(!permut_templates, "failed to create permut_templates");
+    char *permut_str = malloc(num_templates*1024*38);
+    die_iferr(!permut_str, "failed to allocate permut_str");
 
-    data_info[0] = 36; // KEY_LENGTH, 9 uints per key
-    data_info[1] = 1;  // num_keys
-    char *key = "tyranous pluto twits";
-    memcpy(keys, key, strlen(key) + 1);
-
-    cl_mem data_info_bufs[num_devices];
-    cl_mem keys_bufs[num_devices];
-    cl_mem hashes_bufs[num_devices];
+    cl_mem permut_templates_bufs[num_devices];
+    cl_mem permut_str_bufs[num_devices];
 
     cl_command_queue queue[num_devices];
 
@@ -168,62 +189,75 @@ int main(int argc, char *argv[]) {
         programs[i] = clCreateProgramWithSource(ctxs[i], 1, sources, lengths, &errcode);
         die_iferr(errcode, "failed to create program");
         errcode = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
+        if (errcode == CL_BUILD_PROGRAM_FAILURE) {
+            // Determine the size of the log
+            size_t log_size;
+            clGetProgramBuildInfo(programs[i], device_ids[i], CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+            // Allocate memory for the log
+            char *log = (char *) malloc(log_size);
+            // Get the log
+            clGetProgramBuildInfo(programs[i], device_ids[i], CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+            // Print the log
+            printf("%s\n", log);
+        }
         die_iferr(errcode, "failed to build program");
 
-        md5_kernels[i] = clCreateKernel(programs[i], "md5", &errcode);
+        permut_kernels[i] = clCreateKernel(programs[i], "permut", &errcode);
         die_iferr(errcode, "failed to create kernel");
 
-        data_info_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(data_info), data_info, &errcode);
-        die_iferr(errcode, "failed to create data_info_buf");
-        keys_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(keys), keys, &errcode);
-        die_iferr(errcode, "failed to create keys_buf");
-        hashes_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(hashes), hashes, &errcode);
-        die_iferr(errcode, "failed to create hashes_buf");
+        permut_templates_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_template), permut_templates, &errcode);
+        die_iferr(errcode, "failed to create permut_templates_bufs");
+        permut_str_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY, num_templates*1024*38, NULL, &errcode);
+        die_iferr(errcode, "failed to create permut_str_bufs");
 
-        clSetKernelArg(md5_kernels[i], 0, sizeof (cl_mem), &data_info_bufs[i]);
-        clSetKernelArg(md5_kernels[i], 1, sizeof (cl_mem), &keys_bufs[i]);
-        clSetKernelArg(md5_kernels[i], 2, sizeof (cl_mem), &hashes_bufs[i]);
+        clSetKernelArg(permut_kernels[i], 0, sizeof (cl_mem), &permut_templates_bufs[i]);
+        clSetKernelArg(permut_kernels[i], 1, sizeof (cl_mem), &permut_str_bufs[i]);
 
         queue[i] = clCreateCommandQueue(ctxs[i], device_ids[i], NULL, &errcode);
         die_iferr(errcode, "failed to create command queue");
     }
 
-    while(1) {
-        struct timeval t0;
-        gettimeofday(&t0, 0);
+    struct timeval t0;
+    gettimeofday(&t0, 0);
 
-        const size_t globalWorkSize[] = {32, 1024, 1024};
-        cl_event evt[num_devices];
+    const size_t globalWorkSize[] = {num_templates, 0, 0};
+    cl_event evt[num_devices];
+
+//    while (1) {
         for (int i=0; i<num_devices; i++) {
-            errcode = clEnqueueNDRangeKernel(queue[i], md5_kernels[i], 3, NULL, globalWorkSize, NULL, 0, NULL, &evt[i]);
+            errcode = clEnqueueNDRangeKernel(queue[i], permut_kernels[i], 1, NULL, globalWorkSize, NULL, 0, NULL, &evt[i]);
             die_iferr(errcode, "failed to enqueue kernel");
         }
 
         errcode = clWaitForEvents(num_devices, evt);
         die_iferr(errcode, "failed to wait for completion");
 
-//        errcode = clEnqueueReadBuffer (queue, hashes_buf, CL_TRUE, 0, sizeof (hashes), hashes, 0, NULL, NULL);
-//        die_iferr(errcode, "failed to read hashes");
-
         struct timeval t1;
         gettimeofday(&t1, 0);
         long elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
 
-        format_bignum(1000L * 500 * globalWorkSize[0] * globalWorkSize[1] * globalWorkSize[2] * num_devices / elapsed_millis, char_buf, 1000);
+        format_bignum(1000L * 1024 * globalWorkSize[0] /** globalWorkSize[1] * globalWorkSize[2]*/ * num_devices / elapsed_millis, char_buf, 1000);
         printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
-    }
+//    }
 
-    hash_to_ascii(hashes, char_buf);
-    printf("hash: %s\n", char_buf);
+//    errcode = clEnqueueReadBuffer (queue[0], permut_str_bufs[0], CL_TRUE, 0, num_templates*1024*38, permut_str, 0, NULL, NULL);
+//    die_iferr(errcode, "failed to read hashes");
+
+/*
+    FILE *f = fopen("perms_gpu.txt", "w");
+    for (int i=0; i<num_templates*1024; i++) {
+        fprintf(f, "%s\n", &permut_str[i*38]);
+    }
+    fclose(f);
+*/
 
     for (int i=0; i<num_devices; i++) {
         clReleaseCommandQueue (queue[i]);
 
-        clReleaseMemObject(data_info_bufs[i]);
-        clReleaseMemObject(keys_bufs[i]);
-        clReleaseMemObject(hashes_bufs[i]);
+        clReleaseMemObject(permut_templates_bufs[i]);
+        clReleaseMemObject(permut_str_bufs[i]);
 
-        clReleaseKernel(md5_kernels[i]);
+        clReleaseKernel(permut_kernels[i]);
 
         clReleaseProgram(programs[i]);
 
