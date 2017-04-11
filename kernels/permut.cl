@@ -39,7 +39,7 @@
  * @param key - char string grouped into 16 uint's (little endian)
  * @param hash - output for MD5 hash of a key (4 uint's).
  */
-void md5(const uint *key, __global uint *hash)
+void md5(const uint *key, uint *hash)
 {
     uint a, b, c, d;
 
@@ -166,7 +166,7 @@ ulong fact(uchar x) {
     }
 }
 
-__kernel void permut(__global const permut_template *permut_templates, const uint iters_per_item, __global uint *hashes) {
+__kernel void permut(__global const permut_template *permut_templates, const uint iters_per_item, __global uint *hashes, uint hashes_num, __global uint *hashes_reversed) {
     int id = get_global_id(0);
     __global const permut_template *tmpl = &permut_templates[id];
 
@@ -227,7 +227,11 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
     }
 
     ushort counter=0;
+    uint computed_hash[4];
     do {
+        for (uchar ik=0; ik<16; ik++) {
+            key[ik] = 0;
+        }
         // construct key
         uchar wcs=0;
         for (uchar io=0; io<offsets_len; io++) {
@@ -251,7 +255,27 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
         PUTCHAR(key, 57, wcs >> 5);
 
         // calculate hash
-        md5(key, &hashes[(id*iters_per_item+counter)*4]);
+        md5(key, computed_hash);
+
+        // is hash a match?
+        //TODO copy hashes to local mem? or screw it?
+        for(uchar ih=0; ih<hashes_num; ih++) {
+            uchar match = 1;
+            for(uchar ihj=0; ihj<4; ihj++) {
+                if(hashes[4*ih+ihj] != computed_hash[ihj]) {
+                    match = 0;
+                    break;
+                }
+            }
+
+            if (match) {
+                PUTCHAR(key, wcs, 0);
+                for (uchar ihr=0; ihr<MAX_STR_LENGTH/4; ihr++) {
+                    hashes_reversed[ih*(MAX_STR_LENGTH/4)+ihr]=key[ihr];
+                }
+                break;
+            }
+        }
 
         // find next permut if possible
         char k = -1;

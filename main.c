@@ -59,20 +59,20 @@ void format_bignum(uint64_t size, char *dst, uint16_t div) {
     sprintf(dst, "%lu%s", size, size_suffixes[divs]);
 }
 
-void hash_to_ascii(uint32_t *hash_ints, char *buf) {
+void hash_to_ascii(const uint32_t *hash, char *buf) {
     int di = 0;
     for(int si=0; si<4; si++) {
-        buf[di++] = (hash_ints[si] & 0x000000f0) >>  4;
-        buf[di++] = (hash_ints[si] & 0x0000000f)      ;
+        buf[di++] = (hash[si] & 0x000000f0) >>  4;
+        buf[di++] = (hash[si] & 0x0000000f)      ;
 
-        buf[di++] = (hash_ints[si] & 0x0000f000) >> 12;
-        buf[di++] = (hash_ints[si] & 0x00000f00) >>  8;
+        buf[di++] = (hash[si] & 0x0000f000) >> 12;
+        buf[di++] = (hash[si] & 0x00000f00) >>  8;
 
-        buf[di++] = (hash_ints[si] & 0x00f00000) >> 20;
-        buf[di++] = (hash_ints[si] & 0x000f0000) >> 16;
+        buf[di++] = (hash[si] & 0x00f00000) >> 20;
+        buf[di++] = (hash[si] & 0x000f0000) >> 16;
 
-        buf[di++] = (hash_ints[si] & 0xf0000000) >> 28;
-        buf[di++] = (hash_ints[si] & 0x0f000000) >> 24;
+        buf[di++] = (hash[si] & 0xf0000000) >> 28;
+        buf[di++] = (hash[si] & 0x0f000000) >> 24;
     }
 
     for(int i=0; i<32; i++) {
@@ -86,7 +86,19 @@ void hash_to_ascii(uint32_t *hash_ints, char *buf) {
     buf[di] = 0;
 }
 
-permut_template* permut_templates_create(const int num_templates) {
+void ascii_to_hash(const char *buf, uint32_t *hash) {
+    char *hash_bytes = (char *)hash;
+    for (int i=0; i<16; i++) {
+        char l = buf[i*2], r = buf[i*2+1];
+        if (l > '9') l-= 'a' - 10;
+        else l-='0';
+        if (r > '9') r-= 'a' - 10;
+        else r-='0';
+        hash_bytes[i] = l<<4 | r;
+    }
+}
+
+permut_template* permut_templates_create(const uint32_t num_templates, const uint32_t iters_per_item) {
     permut_template *templates = malloc(num_templates*sizeof(permut_template));
 
     if (templates == NULL) {
@@ -96,13 +108,47 @@ permut_template* permut_templates_create(const int num_templates) {
     char all_strs[MAX_STR_LENGTH] = "x\0a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0k\0l\0m\0";
     char offsets[MAX_OFFSETS_LENGTH] = {-1, 3, 5, 7, 9, -1, 11, 13, 15, 17, 19, 21, 23, -1, 25, 27};
 
-    for (int i=0; i<num_templates; i++) {
-        templates[i].start_from = 1024*i+1;
+    for (uint32_t i=0; i<num_templates; i++) {
+        templates[i].start_from = (uint)(iters_per_item*i+1);
         memcpy(templates[i].all_strs, all_strs, MAX_STR_LENGTH);
         memcpy(templates[i].offsets, offsets, MAX_OFFSETS_LENGTH);
     }
 
     return templates;
+}
+
+const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
+    FILE *const fd = fopen(file_name, "r");
+    if (!fd) {
+        return 0;
+    }
+
+    fseek(fd, 0L, SEEK_END);
+    const long file_size = ftell(fd);
+    rewind(fd);
+
+    const long hashes_num_est = (file_size + 1) / 33;
+    long hashes_num = 0;
+
+    *hashes = malloc(hashes_num_est*16);
+
+    char buf[1024];
+    while(fgets(buf, 1024, fd) != NULL) {
+        if (buf[32] != '\n') {
+            fprintf(stderr, "not a hash! (%s)\n", buf);
+        }
+        buf[32] = 0;
+
+        if (hashes_num>hashes_num_est) {
+            fprintf(stderr, "too many hashes? skipping tail...\n");
+            break;
+        }
+
+        ascii_to_hash(buf, &((*hashes)[hashes_num*4]));
+        hashes_num++;
+    }
+
+    return hashes_num;
 }
 
 int main(int argc, char *argv[]) {
@@ -164,16 +210,23 @@ int main(int argc, char *argv[]) {
     cl_program programs[num_devices];
     cl_kernel permut_kernels[num_devices];
 
-    const uint32_t num_templates = 2048; // 13!
-    const uint32_t iters_per_item = 256;
-    permut_template *permut_templates = permut_templates_create(num_templates);
+    const uint32_t num_templates = 16384; // 13!
+    const uint32_t iters_per_item = 512;
+    permut_template *permut_templates = permut_templates_create(num_templates, iters_per_item);
     die_iferr(!permut_templates, "failed to create permut_templates");
-    const size_t hashes_len = num_templates * iters_per_item * 4 * sizeof(uint32_t);
-    uint32_t *hashes = malloc(hashes_len);
+
+    uint32_t *hashes;
+    const uint32_t hashes_num = read_hashes("input.hashes", &hashes);
+    die_iferr(!hashes_num, "failed to read hashes");
     die_iferr(!hashes, "failed to allocate hashes");
+
+    const size_t hashes_reversed_len = num_templates * iters_per_item * MAX_STR_LENGTH;
+    uint32_t *hashes_reversed = malloc(hashes_reversed_len);
+    die_iferr(!hashes_reversed, "failed to allocate hashes_reversed");
 
     cl_mem permut_templates_bufs[num_devices];
     cl_mem hashes_bufs[num_devices];
+    cl_mem hashes_reversed_bufs[num_devices];
 
     cl_command_queue queue[num_devices];
 
@@ -204,12 +257,24 @@ int main(int argc, char *argv[]) {
 
         permut_templates_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_template), permut_templates, &errcode);
         die_iferr(errcode, "failed to create permut_templates_bufs");
-        hashes_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY, hashes_len, NULL, &errcode);
+        hashes_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num*16, hashes, &errcode);
         die_iferr(errcode, "failed to create hashes_bufs");
+        hashes_reversed_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY, hashes_reversed_len, NULL, &errcode);
+        die_iferr(errcode, "failed to create hashes_reversed_bufs");
 
+/*
+        __kernel void permut(
+            __global const permut_template *permut_templates,
+                     const uint iters_per_item,
+            __global uint *hashes,
+                     uint hashes_num,
+            __global uint *hashes_reversed)
+*/
         clSetKernelArg(permut_kernels[i], 0, sizeof (cl_mem), &permut_templates_bufs[i]);
         clSetKernelArg(permut_kernels[i], 1, sizeof (iters_per_item), &iters_per_item);
         clSetKernelArg(permut_kernels[i], 2, sizeof (cl_mem), &hashes_bufs[i]);
+        clSetKernelArg(permut_kernels[i], 3, sizeof (hashes_num), &hashes_num);
+        clSetKernelArg(permut_kernels[i], 4, sizeof (cl_mem), &hashes_reversed_bufs[i]);
 
         queue[i] = clCreateCommandQueue(ctxs[i], device_ids[i], NULL, &errcode);
         die_iferr(errcode, "failed to create command queue");
@@ -238,22 +303,21 @@ int main(int argc, char *argv[]) {
         printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
 //    }
 
-    errcode = clEnqueueReadBuffer (queue[0], hashes_bufs[0], CL_TRUE, 0, hashes_len, hashes, 0, NULL, NULL);
-    die_iferr(errcode, "failed to read hashes");
+    errcode = clEnqueueReadBuffer (queue[0], hashes_reversed_bufs[0], CL_TRUE, 0, hashes_reversed_len, hashes_reversed, 0, NULL, NULL);
+    die_iferr(errcode, "failed to read hashes_reversed");
 
-    char hash_ascii_buf[33];
-    FILE *f = fopen("perms_gpu_hashed.txt", "w");
-    for (int i=0; i<num_templates*iters_per_item; i++) {
-        hash_to_ascii(&hashes[i*4], hash_ascii_buf);
-        fprintf(f, "%s\n", hash_ascii_buf);
+    for(int i=0; i<hashes_num; i++) {
+        char hash_ascii[33];
+        hash_to_ascii(&hashes[i*4], hash_ascii);
+        printf("%s:  %s\n", hash_ascii, (char*)&hashes_reversed[i*MAX_STR_LENGTH/4]);
     }
-    fclose(f);
 
     for (int i=0; i<num_devices; i++) {
         clReleaseCommandQueue (queue[i]);
 
         clReleaseMemObject(permut_templates_bufs[i]);
         clReleaseMemObject(hashes_bufs[i]);
+        clReleaseMemObject(hashes_reversed_bufs[i]);
 
         clReleaseKernel(permut_kernels[i]);
 
