@@ -167,7 +167,7 @@ ulong fact(uchar x) {
 }
 
 __kernel void permut(__global const permut_template *permut_templates, const uint iters_per_item, __global uint *hashes, uint hashes_num, __global uint *hashes_reversed) {
-    int id = get_global_id(0);
+    ulong id = get_global_id(0);
     __global const permut_template *tmpl = &permut_templates[id];
 
     uint key[16];
@@ -226,7 +226,7 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
         }
     }
 
-    ushort counter=0;
+    uint counter=0;
     uint computed_hash[4];
     do {
         for (uchar ik=0; ik<16; ik++) {

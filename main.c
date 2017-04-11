@@ -132,12 +132,16 @@ const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
 
     *hashes = malloc(hashes_num_est*16);
 
-    char buf[1024];
-    while(fgets(buf, 1024, fd) != NULL) {
-        if (buf[32] != '\n') {
+    char buf[128];
+    while(fgets(buf, sizeof(buf), fd) != NULL) {
+        for (int i=0; i<sizeof(buf); i++) {
+            if (buf[i] == '\n' || buf[i] == '\r') {
+                buf[i] = 0;
+            }
+        }
+        if (strlen(buf) != 32) {
             fprintf(stderr, "not a hash! (%s)\n", buf);
         }
-        buf[32] = 0;
 
         if (hashes_num>hashes_num_est) {
             fprintf(stderr, "too many hashes? skipping tail...\n");
@@ -210,8 +214,8 @@ int main(int argc, char *argv[]) {
     cl_program programs[num_devices];
     cl_kernel permut_kernels[num_devices];
 
-    const uint32_t num_templates = 16384; // 13!
-    const uint32_t iters_per_item = 512;
+    const uint32_t num_templates = 1024*1024; // peak at ~256-512K
+    const uint32_t iters_per_item = 512; // peak at ~512
     permut_template *permut_templates = permut_templates_create(num_templates, iters_per_item);
     die_iferr(!permut_templates, "failed to create permut_templates");
 
@@ -220,7 +224,7 @@ int main(int argc, char *argv[]) {
     die_iferr(!hashes_num, "failed to read hashes");
     die_iferr(!hashes, "failed to allocate hashes");
 
-    const size_t hashes_reversed_len = num_templates * iters_per_item * MAX_STR_LENGTH;
+    const size_t hashes_reversed_len = hashes_num * MAX_STR_LENGTH;
     uint32_t *hashes_reversed = malloc(hashes_reversed_len);
     die_iferr(!hashes_reversed, "failed to allocate hashes_reversed");
 
