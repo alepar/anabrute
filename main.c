@@ -4,50 +4,19 @@
 #include <time.h>
 
 #ifdef __APPLE__
-    #include "OpenCL/opencl.h"
     #include <unitypes.h>
     #include <event.h>
 #else
-    #include "CL/cl.h"
     #include <sys/time.h>
 #endif
 
-#define MAX_STR_LENGTH 40
-#define MAX_OFFSETS_LENGTH 20
-
-typedef struct {
-    char all_strs[MAX_STR_LENGTH];
-    char offsets[MAX_OFFSETS_LENGTH];  // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
-    uint start_from;
-} permut_template;
+#include "ocl_types.h"
 
 #define die_iferr(val, msg) \
 if (val) {\
     fprintf(stderr, "FATAL: %d - %s\n", val, msg);\
     return val;\
 }
-
-char* read_file(const char* filename) {
-    FILE *fd = fopen(filename, "r");
-    if (fd == NULL) {
-        return NULL;
-    }
-
-    fseek(fd, 0L, SEEK_END);
-    const size_t filesize = (size_t) ftell(fd);
-    rewind(fd);
-
-    char *buf = (char *)malloc(filesize+1);
-    const size_t read = fread(buf, 1, filesize, fd);
-    
-    if (filesize != read) {
-        free(buf);
-        return NULL;
-    }
-
-    return buf;
-}
-
 
 static const char* size_suffixes[] = {"", "K", "M", "G", "T", "P"};
 void format_bignum(uint64_t size, char *dst, uint16_t div) {
@@ -203,18 +172,7 @@ int main(int argc, char *argv[]) {
     }
     printf("\n");
 
-    char *const kernel_source = read_file("kernels/permut.cl");
-    die_iferr(!kernel_source, "failed to read kernel source");
-    size_t lengths[] = {strlen(kernel_source)};
-    const char *sources[] = {kernel_source};
-
-    const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
-    cl_context ctxs[num_devices];
-
-    cl_program programs[num_devices];
-    cl_kernel permut_kernels[num_devices];
-
-    const uint32_t num_templates = 1024*1024; // peak at ~256-512K
+    const uint32_t num_templates = 256*1024; // peak at ~256-512K
     const uint32_t iters_per_item = 512; // peak at ~512
     permut_template *permut_templates = permut_templates_create(num_templates, iters_per_item);
     die_iferr(!permut_templates, "failed to create permut_templates");
@@ -224,79 +182,32 @@ int main(int argc, char *argv[]) {
     die_iferr(!hashes_num, "failed to read hashes");
     die_iferr(!hashes, "failed to allocate hashes");
 
-    const size_t hashes_reversed_len = hashes_num * MAX_STR_LENGTH;
-    uint32_t *hashes_reversed = malloc(hashes_reversed_len);
-    die_iferr(!hashes_reversed, "failed to allocate hashes_reversed");
-
-    cl_mem permut_templates_bufs[num_devices];
-    cl_mem hashes_bufs[num_devices];
-    cl_mem hashes_reversed_bufs[num_devices];
-
-    cl_command_queue queue[num_devices];
-
     cl_int errcode;
+    anactx anactxs[num_devices];
+    anakrnl_permut permut_kernels[num_devices];
     for (int i=0; i<num_devices; i++) {
-        ctxs[i] = clCreateContext(ctx_props, 1, &device_ids[i], NULL, NULL, &errcode);
-        die_iferr(errcode, "failed to create context");
+        errcode = anactx_create(&anactxs[i], platform_id, device_ids[i]);
+        die_iferr(errcode, "failed to create anactx");
 
-        // loading kernel
-        programs[i] = clCreateProgramWithSource(ctxs[i], 1, sources, lengths, &errcode);
-        die_iferr(errcode, "failed to create program");
-        errcode = clBuildProgram(programs[i], 0, NULL, NULL, NULL, NULL);
-        if (errcode == CL_BUILD_PROGRAM_FAILURE) {
-            // Determine the size of the log
-            size_t log_size;
-            clGetProgramBuildInfo(programs[i], device_ids[i], CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
-            // Allocate memory for the log
-            char *log = (char *) malloc(log_size);
-            // Get the log
-            clGetProgramBuildInfo(programs[i], device_ids[i], CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
-            // Print the log
-            printf("%s\n", log);
-        }
-        die_iferr(errcode, "failed to build program");
+        errcode = anactx_set_input_hashes(&anactxs[i], hashes, hashes_num);
+        die_iferr(errcode, "failed to set input hashes");
 
-        permut_kernels[i] = clCreateKernel(programs[i], "permut", &errcode);
+        errcode = anakrnl_permut_create(&permut_kernels[i], &anactxs[i], iters_per_item, permut_templates, num_templates);
         die_iferr(errcode, "failed to create kernel");
-
-        permut_templates_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_template), permut_templates, &errcode);
-        die_iferr(errcode, "failed to create permut_templates_bufs");
-        hashes_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num*16, hashes, &errcode);
-        die_iferr(errcode, "failed to create hashes_bufs");
-        hashes_reversed_bufs[i] = clCreateBuffer(ctxs[i], CL_MEM_WRITE_ONLY, hashes_reversed_len, NULL, &errcode);
-        die_iferr(errcode, "failed to create hashes_reversed_bufs");
-
-/*
-        __kernel void permut(
-            __global const permut_template *permut_templates,
-                     const uint iters_per_item,
-            __global uint *hashes,
-                     uint hashes_num,
-            __global uint *hashes_reversed)
-*/
-        clSetKernelArg(permut_kernels[i], 0, sizeof (cl_mem), &permut_templates_bufs[i]);
-        clSetKernelArg(permut_kernels[i], 1, sizeof (iters_per_item), &iters_per_item);
-        clSetKernelArg(permut_kernels[i], 2, sizeof (cl_mem), &hashes_bufs[i]);
-        clSetKernelArg(permut_kernels[i], 3, sizeof (hashes_num), &hashes_num);
-        clSetKernelArg(permut_kernels[i], 4, sizeof (cl_mem), &hashes_reversed_bufs[i]);
-
-        queue[i] = clCreateCommandQueue(ctxs[i], device_ids[i], NULL, &errcode);
-        die_iferr(errcode, "failed to create command queue");
     }
 
     struct timeval t0;
     gettimeofday(&t0, 0);
 
-    const size_t globalWorkSize[] = {num_templates, 0, 0};
-    cl_event evt[num_devices];
-
     for (int i=0; i<num_devices; i++) {
-        errcode = clEnqueueNDRangeKernel(queue[i], permut_kernels[i], 1, NULL, globalWorkSize, NULL, 0, NULL, &evt[i]);
+        errcode = anakrnl_permut_enqueue(&permut_kernels[i]);
         die_iferr(errcode, "failed to enqueue kernel");
     }
 
-    errcode = clWaitForEvents(num_devices, evt);
-    die_iferr(errcode, "failed to wait for completion");
+    for (int i=0; i<num_devices; i++) {
+        errcode = anakrnl_permut_wait(&permut_kernels[i]);
+        die_iferr(errcode, "failed to wait for completion");
+    }
 
     struct timeval t1;
     gettimeofday(&t1, 0);
@@ -305,7 +216,7 @@ int main(int argc, char *argv[]) {
     format_bignum(1000L * iters_per_item * num_templates * num_devices / elapsed_millis, char_buf, 1000);
     printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
 
-    errcode = clEnqueueReadBuffer (queue[0], hashes_reversed_bufs[0], CL_TRUE, 0, hashes_reversed_len, hashes_reversed, 0, NULL, NULL);
+    const uint32_t *hashes_reversed = anactx_read_hashes_reversed(&anactxs[0], &errcode);
     die_iferr(errcode, "failed to read hashes_reversed");
 
     for(int i=0; i<hashes_num; i++) {
@@ -315,17 +226,8 @@ int main(int argc, char *argv[]) {
     }
 
     for (int i=0; i<num_devices; i++) {
-        clReleaseCommandQueue (queue[i]);
-
-        clReleaseMemObject(permut_templates_bufs[i]);
-        clReleaseMemObject(hashes_bufs[i]);
-        clReleaseMemObject(hashes_reversed_bufs[i]);
-
-        clReleaseKernel(permut_kernels[i]);
-
-        clReleaseProgram(programs[i]);
-
-        clReleaseContext(ctxs[i]);
+        anakrnl_permut_free(&permut_kernels[i]);
+        anactx_free(&anactxs[i]);
     }
 
     return 0;

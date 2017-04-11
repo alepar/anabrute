@@ -30,7 +30,7 @@ char* read_file(const char* filename) {
 
 // public stuff
 
-cl_int ana_threadctx_create(ana_threadctx *anactx, cl_platform_id platform_id, cl_device_id device_id) {
+cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id device_id) {
     anactx->platform_id = platform_id;
     anactx->device_id = device_id;
 
@@ -65,10 +65,85 @@ cl_int ana_threadctx_create(ana_threadctx *anactx, cl_platform_id platform_id, c
     return CL_SUCCESS;
 }
 
-cl_int ana_threadctx_free(ana_threadctx *anactx) {
+cl_int anactx_set_input_hashes(anactx *anactx, uint32_t *hashes, uint32_t hashes_num) {
+    anactx->hashes_num = hashes_num;
+
+    anactx->hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
+    ret_ifnz(!anactx->hashes_reversed);
+
+    cl_int errcode;
+    anactx->mem_hashes = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num*16, hashes, &errcode);
+    ret_ifnz(errcode);
+    anactx->mem_hashes_reversed = clCreateBuffer(anactx->cl_ctx, CL_MEM_WRITE_ONLY, hashes_num * MAX_STR_LENGTH, NULL, &errcode);
+    ret_ifnz(errcode);
+
+    return CL_SUCCESS;
+}
+
+const uint32_t* anactx_read_hashes_reversed(anactx *anactx, cl_int *errcode) {
+    *errcode = clEnqueueReadBuffer (anactx->queue, anactx->mem_hashes_reversed, CL_TRUE, 0, anactx->hashes_num * MAX_STR_LENGTH, anactx->hashes_reversed, 0, NULL, NULL);
+    if (*errcode) {
+        return NULL;
+    }
+    return anactx->hashes_reversed;
+}
+
+cl_int anactx_free(anactx *anactx) {
+    if (anactx->hashes_reversed) {
+        free(anactx->hashes_reversed);
+    }
+
     cl_int errcode = CL_SUCCESS;
+    errcode |= clReleaseMemObject(anactx->mem_hashes);
+    errcode |= clReleaseMemObject(anactx->mem_hashes_reversed);
     errcode |= clReleaseCommandQueue (anactx->queue);
     errcode |= clReleaseProgram(anactx->program);
     errcode |= clReleaseContext(anactx->cl_ctx);
+
     return errcode;
+}
+
+cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t iters_per_item, permut_template *templates, uint32_t num_templates) {
+    cl_int errcode;
+
+    anakrnl->ctx = anactx;
+    anakrnl->iters_per_item = iters_per_item;
+    anakrnl->num_templates = num_templates;
+    anakrnl->templates = templates;
+
+    anakrnl->kernel = clCreateKernel(anactx->program, "permut", &errcode);
+    ret_ifnz(errcode);
+
+    anakrnl->mem_permut_templates = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_template), templates, &errcode);
+    ret_ifnz(errcode);
+
+/*
+        __kernel void permut(
+            __global const permut_template *permut_templates,
+                     const uint iters_per_item,
+            __global uint *hashes,
+                     uint hashes_num,
+            __global uint *hashes_reversed)
+*/
+    errcode |= clSetKernelArg(anakrnl->kernel, 0, sizeof (cl_mem), &anakrnl->mem_permut_templates);
+    errcode |= clSetKernelArg(anakrnl->kernel, 1, sizeof (iters_per_item), &iters_per_item);
+    errcode |= clSetKernelArg(anakrnl->kernel, 2, sizeof (cl_mem), &anactx->mem_hashes);
+    errcode |= clSetKernelArg(anakrnl->kernel, 3, sizeof (anactx->hashes_num), &anactx->hashes_num);
+    errcode |= clSetKernelArg(anakrnl->kernel, 4, sizeof (cl_mem), &anactx->mem_hashes_reversed);
+
+    return errcode;
+}
+
+cl_int anakrnl_permut_enqueue(anakrnl_permut *anakrnl) {
+    size_t globalWorkSize[] = {anakrnl->num_templates, 0, 0};
+    return clEnqueueNDRangeKernel(anakrnl->ctx->queue, anakrnl->kernel, 1, NULL, globalWorkSize, NULL, 0, NULL, &anakrnl->event);
+}
+
+cl_int anakrnl_permut_wait(anakrnl_permut *anakrnl) {
+    return clWaitForEvents(1, &anakrnl->event);
+}
+
+cl_int anakrnl_permut_free(anakrnl_permut *anakrnl) {
+    clReleaseMemObject(anakrnl->mem_permut_templates);
+    clReleaseKernel(anakrnl->kernel);
 }
