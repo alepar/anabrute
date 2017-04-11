@@ -18,7 +18,7 @@
 typedef struct {
     char all_strs[MAX_STR_LENGTH];
     char offsets[MAX_OFFSETS_LENGTH];  // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
-    uint start_from;  // TODO make uint
+    uint start_from;
 } permut_template;
 
 #define die_iferr(val, msg) \
@@ -286,22 +286,20 @@ int main(int argc, char *argv[]) {
     const size_t globalWorkSize[] = {num_templates, 0, 0};
     cl_event evt[num_devices];
 
-//    while (1) {
-        for (int i=0; i<num_devices; i++) {
-            errcode = clEnqueueNDRangeKernel(queue[i], permut_kernels[i], 1, NULL, globalWorkSize, NULL, 0, NULL, &evt[i]);
-            die_iferr(errcode, "failed to enqueue kernel");
-        }
+    for (int i=0; i<num_devices; i++) {
+        errcode = clEnqueueNDRangeKernel(queue[i], permut_kernels[i], 1, NULL, globalWorkSize, NULL, 0, NULL, &evt[i]);
+        die_iferr(errcode, "failed to enqueue kernel");
+    }
 
-        errcode = clWaitForEvents(num_devices, evt);
-        die_iferr(errcode, "failed to wait for completion");
+    errcode = clWaitForEvents(num_devices, evt);
+    die_iferr(errcode, "failed to wait for completion");
 
-        struct timeval t1;
-        gettimeofday(&t1, 0);
-        long elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
+    struct timeval t1;
+    gettimeofday(&t1, 0);
+    long elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
 
-        format_bignum(1000L * iters_per_item * globalWorkSize[0] /** globalWorkSize[1] * globalWorkSize[2]*/ * num_devices / elapsed_millis, char_buf, 1000);
-        printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
-//    }
+    format_bignum(1000L * iters_per_item * num_templates * num_devices / elapsed_millis, char_buf, 1000);
+    printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
 
     errcode = clEnqueueReadBuffer (queue[0], hashes_reversed_bufs[0], CL_TRUE, 0, hashes_reversed_len, hashes_reversed, 0, NULL, NULL);
     die_iferr(errcode, "failed to read hashes_reversed");
