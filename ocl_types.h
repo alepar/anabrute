@@ -11,7 +11,7 @@
 #endif
 
 // peak at ~256-512K
-#define PERMUT_TEMPLATES_SIZE 256*1024
+#define PERMUT_TEMPLATES_SIZE 512*1024
 // peak at ~512
 #define MAX_ITERS_PER_ITEM 512
 
@@ -26,6 +26,10 @@ typedef struct permut_task_s {
 
 struct anakrnl_permut_s;
 typedef struct anactx_s {
+    // parallelization over devices
+    uint32_t num_threads;
+    uint32_t thread_id;
+
     // control stuff
     cl_platform_id platform_id;
     cl_device_id device_id;

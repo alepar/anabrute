@@ -2,6 +2,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 
 #ifdef __APPLE__
     #include <unitypes.h>
@@ -11,6 +12,7 @@
 #endif
 
 #include "ocl_types.h"
+#include "hashes.h"
 
 #define die_iferr(val, msg) \
 if (val) {\
@@ -26,45 +28,6 @@ void format_bignum(uint64_t size, char *dst, uint16_t div) {
         divs++;
     }
     sprintf(dst, "%lu%s", size, size_suffixes[divs]);
-}
-
-void hash_to_ascii(const uint32_t *hash, char *buf) {
-    int di = 0;
-    for(int si=0; si<4; si++) {
-        buf[di++] = (hash[si] & 0x000000f0) >>  4;
-        buf[di++] = (hash[si] & 0x0000000f)      ;
-
-        buf[di++] = (hash[si] & 0x0000f000) >> 12;
-        buf[di++] = (hash[si] & 0x00000f00) >>  8;
-
-        buf[di++] = (hash[si] & 0x00f00000) >> 20;
-        buf[di++] = (hash[si] & 0x000f0000) >> 16;
-
-        buf[di++] = (hash[si] & 0xf0000000) >> 28;
-        buf[di++] = (hash[si] & 0x0f000000) >> 24;
-    }
-
-    for(int i=0; i<32; i++) {
-        if (buf[i] > 9) {
-            buf[i] += 'a' - 10;
-        } else {
-            buf[i] += '0';
-        }
-    }
-
-    buf[di] = 0;
-}
-
-void ascii_to_hash(const char *buf, uint32_t *hash) {
-    char *hash_bytes = (char *)hash;
-    for (int i=0; i<16; i++) {
-        char l = buf[i*2], r = buf[i*2+1];
-        if (l > '9') l-= 'a' - 10;
-        else l-='0';
-        if (r > '9') r-= 'a' - 10;
-        else r-='0';
-        hash_bytes[i] = l<<4 | r;
-    }
 }
 
 permut_task* permut_templates_create(const uint32_t num_templates, const uint32_t iters_per_item) {
@@ -124,6 +87,23 @@ const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
     return hashes_num;
 }
 
+void* run_kernel(void *ptr) {
+    anakrnl_permut *anakrnl = ptr;
+
+    cl_int errcode;
+    errcode = anakrnl_permut_enqueue(anakrnl);
+    if (errcode) {
+        fprintf(stderr, "%d: failed to enqueue kernel\n", errcode);
+    }
+
+    errcode = anakrnl_permut_wait(anakrnl);
+    if (errcode) {
+        fprintf(stderr, "%d: failed to wait for completion\n", errcode);
+    }
+
+    return NULL;
+}
+
 int main(int argc, char *argv[]) {
     cl_platform_id platform_id;
     cl_uint num_platforms;
@@ -172,7 +152,7 @@ int main(int argc, char *argv[]) {
     }
     printf("\n");
 
-    const uint32_t num_templates = 256*1024; // peak at ~256-512K
+    const uint32_t num_templates = 2048*1024; // peak at ~256-512K
     const uint32_t iters_per_item = 512; // peak at ~512
     permut_task *permut_templates = permut_templates_create(num_templates, iters_per_item);
     die_iferr(!permut_templates, "failed to create permut_templates");
@@ -185,9 +165,12 @@ int main(int argc, char *argv[]) {
     cl_int errcode;
     anactx anactxs[num_devices];
     anakrnl_permut permut_kernels[num_devices];
-    for (int i=0; i<num_devices; i++) {
+    for (uint32_t i=0; i<num_devices; i++) {
         errcode = anactx_create(&anactxs[i], platform_id, device_ids[i]);
         die_iferr(errcode, "failed to create anactx");
+
+        anactxs[i].num_threads = num_devices;
+        anactxs[i].thread_id = i;
 
         errcode = anactx_set_input_hashes(&anactxs[i], hashes, hashes_num);
         die_iferr(errcode, "failed to set input hashes");
@@ -196,30 +179,29 @@ int main(int argc, char *argv[]) {
         die_iferr(errcode, "failed to create kernel");
     }
 
-    struct timeval t0;
-    gettimeofday(&t0, 0);
+    for (int ii=0; ii<3; ii++) {
+        struct timeval t0, t1;
+        gettimeofday(&t0, 0);
+        long elapsed_millis;
 
-    for (int i=0; i<num_devices; i++) {
-        errcode = anakrnl_permut_enqueue(&permut_kernels[i]);
-        die_iferr(errcode, "failed to enqueue kernel");
+        pthread_t threads[num_devices];
+        for (uint32_t i=0; i<num_devices; i++) {
+            pthread_create(&threads[i], NULL, run_kernel, &permut_kernels[i]);
+        }
+        for (uint32_t i=0; i<num_devices; i++) {
+            pthread_join(threads[i], NULL);
+        }
+
+        gettimeofday(&t1, 0);
+        elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
+        format_bignum(1000L * iters_per_item * num_templates * num_devices / elapsed_millis, char_buf, 1000);
+        printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
     }
-
-    for (int i=0; i<num_devices; i++) {
-        errcode = anakrnl_permut_wait(&permut_kernels[i]);
-        die_iferr(errcode, "failed to wait for completion");
-    }
-
-    struct timeval t1;
-    gettimeofday(&t1, 0);
-    long elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
-
-    format_bignum(1000L * iters_per_item * num_templates * num_devices / elapsed_millis, char_buf, 1000);
-    printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
 
     const uint32_t *hashes_reversed = anactx_read_hashes_reversed(&anactxs[0], &errcode);
     die_iferr(errcode, "failed to read hashes_reversed");
 
-    for(int i=0; i<hashes_num; i++) {
+    for(int i=0; i<5; i++) {
         char hash_ascii[33];
         hash_to_ascii(&hashes[i*4], hash_ascii);
         printf("%s:  %s\n", hash_ascii, (char*)&hashes_reversed[i*MAX_STR_LENGTH/4]);
