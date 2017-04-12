@@ -34,6 +34,12 @@ cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id de
     anactx->platform_id = platform_id;
     anactx->device_id = device_id;
 
+    anactx->tasks_in_buffer_count = 0;
+    anactx->hashes_num = 0;
+    anactx->hashes_reversed = NULL;
+    anactx->cur_exec_kernel = NULL;
+    anactx->tasks_buffer = calloc(PERMUT_TEMPLATES_SIZE, sizeof(permut_task));
+
     cl_int errcode;
     const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
     anactx->cl_ctx = clCreateContext(ctx_props, 1, &device_id, NULL, NULL, &errcode);
@@ -93,6 +99,8 @@ cl_int anactx_free(anactx *anactx) {
         free(anactx->hashes_reversed);
     }
 
+    free(anactx->tasks_buffer);
+
     cl_int errcode = CL_SUCCESS;
     errcode |= clReleaseMemObject(anactx->mem_hashes);
     errcode |= clReleaseMemObject(anactx->mem_hashes_reversed);
@@ -103,7 +111,7 @@ cl_int anactx_free(anactx *anactx) {
     return errcode;
 }
 
-cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t iters_per_item, permut_template *templates, uint32_t num_templates) {
+cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t iters_per_item, permut_task *templates, uint32_t num_templates) {
     cl_int errcode;
 
     anakrnl->ctx = anactx;
@@ -114,12 +122,12 @@ cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t i
     anakrnl->kernel = clCreateKernel(anactx->program, "permut", &errcode);
     ret_ifnz(errcode);
 
-    anakrnl->mem_permut_templates = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_template), templates, &errcode);
+    anakrnl->mem_permut_templates = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_task), templates, &errcode);
     ret_ifnz(errcode);
 
 /*
         __kernel void permut(
-            __global const permut_template *permut_templates,
+            __global const permut_task *permut_templates,
                      const uint iters_per_item,
             __global uint *hashes,
                      uint hashes_num,

@@ -67,8 +67,8 @@ void ascii_to_hash(const char *buf, uint32_t *hash) {
     }
 }
 
-permut_template* permut_templates_create(const uint32_t num_templates, const uint32_t iters_per_item) {
-    permut_template *templates = malloc(num_templates*sizeof(permut_template));
+permut_task* permut_templates_create(const uint32_t num_templates, const uint32_t iters_per_item) {
+    permut_task *templates = malloc(num_templates*sizeof(permut_task));
 
     if (templates == NULL) {
         return NULL;
@@ -174,7 +174,7 @@ int main(int argc, char *argv[]) {
 
     const uint32_t num_templates = 256*1024; // peak at ~256-512K
     const uint32_t iters_per_item = 512; // peak at ~512
-    permut_template *permut_templates = permut_templates_create(num_templates, iters_per_item);
+    permut_task *permut_templates = permut_templates_create(num_templates, iters_per_item);
     die_iferr(!permut_templates, "failed to create permut_templates");
 
     uint32_t *hashes;
