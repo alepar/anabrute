@@ -11,7 +11,7 @@
 #endif
 
 // peak at ~256-512K
-#define PERMUT_TEMPLATES_SIZE 512*1024
+#define PERMUT_TASKS_IN_BATCH 512*1024
 // peak at ~512
 #define MAX_ITERS_PER_ITEM 512
 
@@ -55,6 +55,9 @@ cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id de
 cl_int anactx_set_input_hashes(anactx *anactx, uint32_t *hashes, uint32_t hashes_num);
 const uint32_t* anactx_read_hashes_reversed(anactx *anactx, cl_int *errcode);
 cl_int anactx_free(anactx *anactx);
+cl_int anactx_submit_permut_task(anactx *anactx, permut_task *task);
+cl_int anactx_flush_tasks_buffer(anactx *anactx);
+cl_int anactx_wait_for_cur_kernel(anactx *anactx);
 
 // TODO add to queue
 // TODO make queue available
@@ -76,5 +79,11 @@ cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t i
 cl_int anakrnl_permut_enqueue(anakrnl_permut *anakrnl);
 cl_int anakrnl_permut_wait(anakrnl_permut *anakrnl);
 cl_int anakrnl_permut_free(anakrnl_permut *anakrnl);
+
+#define ret_iferr(val, msg) \
+if (val) {\
+    fprintf(stderr, "FATAL: %d - %s\n", val, msg);\
+    return val;\
+}
 
 #endif //OPENCL_TEST_OCL_TYPES_H

@@ -11,14 +11,8 @@
     #include <sys/time.h>
 #endif
 
-#include "ocl_types.h"
+#include "ocl_layer.h"
 #include "hashes.h"
-
-#define die_iferr(val, msg) \
-if (val) {\
-    fprintf(stderr, "FATAL: %d - %s\n", val, msg);\
-    return val;\
-}
 
 static const char* size_suffixes[] = {"", "K", "M", "G", "T", "P"};
 void format_bignum(uint64_t size, char *dst, uint16_t div) {
@@ -28,25 +22,6 @@ void format_bignum(uint64_t size, char *dst, uint16_t div) {
         divs++;
     }
     sprintf(dst, "%lu%s", size, size_suffixes[divs]);
-}
-
-permut_task* permut_templates_create(const uint32_t num_templates, const uint32_t iters_per_item) {
-    permut_task *templates = malloc(num_templates*sizeof(permut_task));
-
-    if (templates == NULL) {
-        return NULL;
-    }
-
-    char all_strs[MAX_STR_LENGTH] = "x\0a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0k\0l\0m\0";
-    char offsets[MAX_OFFSETS_LENGTH] = {-1, 3, 5, 7, 9, -1, 11, 13, 15, 17, 19, 21, 23, -1, 25, 27};
-
-    for (uint32_t i=0; i<num_templates; i++) {
-        templates[i].start_from = (uint)(iters_per_item*i+1);
-        memcpy(templates[i].all_strs, all_strs, MAX_STR_LENGTH);
-        memcpy(templates[i].offsets, offsets, MAX_OFFSETS_LENGTH);
-    }
-
-    return templates;
 }
 
 const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
@@ -88,33 +63,54 @@ const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
 }
 
 void* run_kernel(void *ptr) {
-    anakrnl_permut *anakrnl = ptr;
+    anactx *anactx = ptr;
 
+    char all_strs[MAX_STR_LENGTH] = "x\0a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0k\0l\0m\0";
+    char offsets[MAX_OFFSETS_LENGTH] = {-1, 3, 5, 7, 9, -1, 11, 13, 15, 17, 19, 21, 23, -1, 25, 27};
+
+    permut_task task;
+
+    memcpy(&task.all_strs, &all_strs, MAX_STR_LENGTH);
+    memcpy(&task.offsets, &offsets, MAX_OFFSETS_LENGTH);
+
+    struct timeval t0, t1;
+    gettimeofday(&t0, 0);
+    long elapsed_millis;
+
+    uint32_t i;
     cl_int errcode;
-    errcode = anakrnl_permut_enqueue(anakrnl);
-    if (errcode) {
-        fprintf(stderr, "%d: failed to enqueue kernel\n", errcode);
+    for (i=0; i<PERMUT_TASKS_IN_BATCH*3; i++) {
+//        printf("[%d] DEBUG2 %d\n", anactx->thread_id, i);
+        task.start_from = (uint)(MAX_ITERS_PER_ITEM*i+1);
+        errcode = anactx_submit_permut_task(anactx, &task);
+        ret_iferr(errcode, "failed to submit task");
     }
 
-    errcode = anakrnl_permut_wait(anakrnl);
-    if (errcode) {
-        fprintf(stderr, "%d: failed to wait for completion\n", errcode);
-    }
+    errcode = anactx_flush_tasks_buffer(anactx);
+    ret_iferr(errcode, "failed to flush tasks buffer");
+    errcode = anactx_wait_for_cur_kernel(anactx);
+    ret_iferr(errcode, "failed to wait for last kernel");
 
-    return NULL;
+    gettimeofday(&t1, 0);
+    elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
+    char char_buf[1024];
+    format_bignum(1000L * MAX_ITERS_PER_ITEM * i / elapsed_millis, char_buf, 1000);
+    printf("[Thread %d] took %.2fsec, speed: ~%sHash/s\n", anactx->thread_id, elapsed_millis / 10 / 100.0, char_buf);
+
+    return CL_SUCCESS;
 }
 
 int main(int argc, char *argv[]) {
     cl_platform_id platform_id;
     cl_uint num_platforms;
     clGetPlatformIDs (1, &platform_id, &num_platforms);
-    die_iferr(!num_platforms, "no platforms");
+    ret_iferr(!num_platforms, "no platforms");
 
     cl_uint num_devices;
     clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, 0, NULL, &num_devices);
     cl_device_id device_ids[num_devices];
     clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, num_devices, device_ids, &num_devices);
-    die_iferr(!num_devices, "no devices");
+    ret_iferr(!num_devices, "no devices");
 
     uint32_t num_gpus = 0;
     for (int i=0; i<num_devices; i++) {
@@ -152,54 +148,38 @@ int main(int argc, char *argv[]) {
     }
     printf("\n");
 
-    const uint32_t num_templates = 2048*1024; // peak at ~256-512K
-    const uint32_t iters_per_item = 512; // peak at ~512
-    permut_task *permut_templates = permut_templates_create(num_templates, iters_per_item);
-    die_iferr(!permut_templates, "failed to create permut_templates");
-
     uint32_t *hashes;
     const uint32_t hashes_num = read_hashes("input.hashes", &hashes);
-    die_iferr(!hashes_num, "failed to read hashes");
-    die_iferr(!hashes, "failed to allocate hashes");
+    ret_iferr(!hashes_num, "failed to read hashes");
+    ret_iferr(!hashes, "failed to allocate hashes");
 
     cl_int errcode;
     anactx anactxs[num_devices];
-    anakrnl_permut permut_kernels[num_devices];
     for (uint32_t i=0; i<num_devices; i++) {
         errcode = anactx_create(&anactxs[i], platform_id, device_ids[i]);
-        die_iferr(errcode, "failed to create anactx");
+        ret_iferr(errcode, "failed to create anactx");
 
         anactxs[i].num_threads = num_devices;
         anactxs[i].thread_id = i;
 
         errcode = anactx_set_input_hashes(&anactxs[i], hashes, hashes_num);
-        die_iferr(errcode, "failed to set input hashes");
-
-        errcode = anakrnl_permut_create(&permut_kernels[i], &anactxs[i], iters_per_item, permut_templates, num_templates);
-        die_iferr(errcode, "failed to create kernel");
+        ret_iferr(errcode, "failed to set input hashes");
     }
 
     for (int ii=0; ii<3; ii++) {
-        struct timeval t0, t1;
-        gettimeofday(&t0, 0);
-        long elapsed_millis;
-
         pthread_t threads[num_devices];
         for (uint32_t i=0; i<num_devices; i++) {
-            pthread_create(&threads[i], NULL, run_kernel, &permut_kernels[i]);
+            int err = pthread_create(&threads[i], NULL, run_kernel, &anactxs[i]);
+            ret_iferr(err, "failed to create thread");
         }
         for (uint32_t i=0; i<num_devices; i++) {
-            pthread_join(threads[i], NULL);
+            int err = pthread_join(threads[i], NULL);
+            ret_iferr(err, "failed to create thread");
         }
-
-        gettimeofday(&t1, 0);
-        elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
-        format_bignum(1000L * iters_per_item * num_templates * num_devices / elapsed_millis, char_buf, 1000);
-        printf("kernel took %.2fsec, speed: ~%sHash/s\n", elapsed_millis / 10 / 100.0, char_buf);
     }
 
     const uint32_t *hashes_reversed = anactx_read_hashes_reversed(&anactxs[0], &errcode);
-    die_iferr(errcode, "failed to read hashes_reversed");
+    ret_iferr(errcode, "failed to read hashes_reversed");
 
     for(int i=0; i<5; i++) {
         char hash_ascii[33];
@@ -208,7 +188,6 @@ int main(int argc, char *argv[]) {
     }
 
     for (int i=0; i<num_devices; i++) {
-        anakrnl_permut_free(&permut_kernels[i]);
         anactx_free(&anactxs[i]);
     }
 

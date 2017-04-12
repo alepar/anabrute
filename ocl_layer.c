@@ -1,9 +1,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "ocl_types.h"
-
-#define ret_ifnz(errcode) if (errcode) return errcode;
+#include "ocl_layer.h"
 
 // private stuff
 
@@ -38,19 +36,19 @@ cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id de
     anactx->hashes_num = 0;
     anactx->hashes_reversed = NULL;
     anactx->cur_exec_kernel = NULL;
-    anactx->tasks_buffer = calloc(PERMUT_TEMPLATES_SIZE, sizeof(permut_task));
+    anactx->tasks_buffer = calloc(PERMUT_TASKS_IN_BATCH, sizeof(permut_task));
 
     cl_int errcode;
     const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
     anactx->cl_ctx = clCreateContext(ctx_props, 1, &device_id, NULL, NULL, &errcode);
-    ret_ifnz(errcode);
+    ret_iferr(errcode, "failed to create context");
 
     char *const kernel_source = read_file("kernels/permut.cl");
-    ret_ifnz(!kernel_source);
+    ret_iferr(!kernel_source, "failed to read kernel source");
     size_t lengths[] = {strlen(kernel_source)};
     const char *sources[] = {kernel_source};
     anactx->program = clCreateProgramWithSource(anactx->cl_ctx, 1, sources, lengths, &errcode);
-    ret_ifnz(errcode);
+    ret_iferr(errcode, "failed to create program");
     errcode = clBuildProgram(anactx->program, 0, NULL, NULL, NULL, NULL);
     if (errcode == CL_BUILD_PROGRAM_FAILURE) {
         // Determine the size of the log
@@ -63,10 +61,10 @@ cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id de
         // Print the log
         fprintf(stderr, "kernel compilation failed, see compiler output below\n------\n%s\n------\n", log);
     }
-    ret_ifnz(errcode);
+    ret_iferr(errcode, "failed to build program");
 
     anactx->queue = clCreateCommandQueue(anactx->cl_ctx, anactx->device_id, NULL, &errcode);
-    ret_ifnz(errcode);
+    ret_iferr(errcode, "failed to create queue");
 
     return CL_SUCCESS;
 }
@@ -75,13 +73,13 @@ cl_int anactx_set_input_hashes(anactx *anactx, uint32_t *hashes, uint32_t hashes
     anactx->hashes_num = hashes_num;
 
     anactx->hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
-    ret_ifnz(!anactx->hashes_reversed);
+    ret_iferr(!anactx->hashes_reversed, "failed to malloc hashes_reversed");
 
     cl_int errcode;
     anactx->mem_hashes = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num*16, hashes, &errcode);
-    ret_ifnz(errcode);
+    ret_iferr(errcode, "failed to create mem_hashes");
     anactx->mem_hashes_reversed = clCreateBuffer(anactx->cl_ctx, CL_MEM_WRITE_ONLY, hashes_num * MAX_STR_LENGTH, NULL, &errcode);
-    ret_ifnz(errcode);
+    ret_iferr(errcode, "failed to create mem_hashes_reversed");
 
     return CL_SUCCESS;
 }
@@ -111,6 +109,57 @@ cl_int anactx_free(anactx *anactx) {
     return errcode;
 }
 
+cl_int anactx_submit_permut_task(anactx *anactx, permut_task *task) {
+    if (anactx->tasks_in_buffer_count >= PERMUT_TASKS_IN_BATCH) {
+        cl_int errcode;
+        errcode = anactx_flush_tasks_buffer(anactx);
+        ret_iferr(errcode, "failed to flush tasks buffer");
+    }
+
+    memcpy(&anactx->tasks_buffer[anactx->tasks_in_buffer_count++], task, sizeof(permut_task));
+    return CL_SUCCESS;
+}
+
+cl_int anactx_flush_tasks_buffer(anactx *anactx) {
+    cl_int errcode;
+    errcode = anactx_wait_for_cur_kernel(anactx);
+    ret_iferr(errcode, "failed to wait for current kernel");
+
+    anakrnl_permut *krnl = malloc(sizeof(anakrnl_permut));
+    ret_iferr(!krnl, "failed to malloc kernel");
+    errcode = anakrnl_permut_create(krnl, anactx, MAX_ITERS_PER_ITEM, anactx->tasks_buffer, anactx->tasks_in_buffer_count);
+    ret_iferr(errcode, "failed to create kernel");
+
+    errcode = anakrnl_permut_enqueue(krnl);
+    if (errcode) {
+        fprintf(stderr, "%d: failed to enqueue kernel\n", errcode);
+    }
+
+    anactx->cur_exec_kernel = krnl;
+    anactx->tasks_in_buffer_count = 0;
+
+    return CL_SUCCESS;
+}
+
+cl_int anactx_wait_for_cur_kernel(anactx *anactx) {
+    anakrnl_permut *krnl = anactx->cur_exec_kernel;
+    if (krnl == NULL) {
+        return CL_SUCCESS;
+    }
+
+    cl_int errcode;
+    errcode = anakrnl_permut_wait(krnl);
+    ret_iferr(errcode, "failed to wait for current kernel");
+    
+    errcode = anakrnl_permut_free(krnl);
+    ret_iferr(errcode, "failed to free kernel");
+
+    free(krnl);
+    anactx->cur_exec_kernel = NULL;
+
+    return CL_SUCCESS;
+}
+
 cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t iters_per_item, permut_task *templates, uint32_t num_templates) {
     cl_int errcode;
 
@@ -120,10 +169,10 @@ cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t i
     anakrnl->templates = templates;
 
     anakrnl->kernel = clCreateKernel(anactx->program, "permut", &errcode);
-    ret_ifnz(errcode);
+    ret_iferr(errcode, "failed to create permut kernel");
 
     anakrnl->mem_permut_templates = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_task), templates, &errcode);
-    ret_ifnz(errcode);
+    ret_iferr(errcode, "failed to create mem_permut_templates");
 
 /*
         __kernel void permut(
