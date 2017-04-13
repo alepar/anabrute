@@ -25,6 +25,8 @@ string_and_count scs[120];
 char_counts_strings* dict_by_char[CHARCOUNT][MAX_DICT_SIZE];
 int dict_by_char_len[CHARCOUNT] = {0};
 
+int debug_flag=0;
+
 int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs) {
     int permutable_count = 0;
     for (int i=0; i<permut_len; i++) {
@@ -37,6 +39,22 @@ int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs
         return 0;
     }
 
+/*
+    if (permutable_count == 6) {
+        for (int j=0; j<MAX_OFFSETS_LENGTH && permut[j]; j++) {
+            char offset = permut[j];
+            if (offset < 0) {
+                offset = -offset;
+            } else {
+                printf("*");
+            }
+            offset--;
+            printf("%s ", all_strs+offset);
+        }
+        printf("\n");
+    }
+
+*/
     for (int i=0; i<permut_len; i++) {
         if (permut[i] > MAX_STR_LENGTH || permut[i] < -MAX_STR_LENGTH) {
             printf("long gotcha!\n");
@@ -162,31 +180,50 @@ int recurse_string_combs(anactx* anactx, stack_item *stack, int stack_len, int s
 }
 
 int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int curdictidx, int stack_len) {
-    int errcode=0;
-/*    printf("[%d] recurse_dict_words || ", anactx->thread_id);
-    printf("\t%d\t%d\t%d\t%d\t||\t", remainder->length, curchar, curdictidx, stack_len);
-    for (int i=0; i<stack_len; i++) {
-        printf("%s", stack[i].ccs->strings[0]);
-        if (stack[i].count > 1) {
-            printf("*%d ", stack[i].count);
+/*
+    // TODO debug
+    if (stack_len == 1) {
+        if (strcmp(stack[0].ccs->strings[0], "outstations")) {
+            if (debug_flag) {
+                printf("flushing\n");
+                anactx_flush_tasks_buffer(anactx);
+                printf("waiting\n");
+                anactx_wait_for_cur_kernel(anactx);
+            }
+            debug_flag=0;
         } else {
-            printf(" ");
+            debug_flag=1;
         }
     }
-    printf("\n");*/
+*/
+
+/*    if (debug_flag) {
+        printf("\t%d\t%d\t%d\t%d\t||\t", remainder->length, curchar, curdictidx, stack_len);
+        for (int i=0; i<stack_len; i++) {
+            printf("%s", stack[i].ccs->strings[0]);
+            if (stack[i].count > 1) {
+                printf("*%d ", stack[i].count);
+            } else {
+                printf(" ");
+            }
+        }
+        printf("\n");
+    }*/
 
     if (remainder->length == 0) {
-        int word_count=0;
-        for (int i=0; i<stack_len; i++) {
-            word_count+=stack[i].count;
-        }
-        if(word_count > 9) { // TODO skip
-            return 0;
-        }
-
         return recurse_string_combs(anactx, stack, stack_len, 0, 0, scs, 0);
     }
 
+    // TODO skip
+    int word_count=0;
+    for (int i=0; i<stack_len; i++) {
+        word_count+=stack[i].count;
+    }
+    if(word_count > 7) {
+        return 0;
+    }
+
+    for (;curchar<CHARCOUNT & !remainder->counts[curchar]; curchar++)
     if(curchar >= CHARCOUNT) {
         return 0;
     }
@@ -199,6 +236,7 @@ int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int 
     }
 */
 
+    int errcode=0;
     for (int i=curdictidx; i<dict_by_char_len[curchar]; i+=step) {
         if (stack_len == 0) {
             printf("L0 %d/%d: %s\n", i, dict_by_char_len[curchar], dict_by_char[curchar][i]->strings[0]);
