@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include "ocl_layer.h"
+#include "hashes.h"
 
 // private stuff
 
@@ -34,6 +35,7 @@ cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id de
 
     anactx->tasks_in_buffer_count = 0;
     anactx->hashes_num = 0;
+    anactx->hashes_seen = 0;
     anactx->hashes_reversed = NULL;
     anactx->cur_exec_kernel = NULL;
     anactx->tasks_buffer = calloc(PERMUT_TASKS_IN_BATCH, sizeof(permut_task));
@@ -70,6 +72,7 @@ cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id de
 }
 
 cl_int anactx_set_input_hashes(anactx *anactx, uint32_t *hashes, uint32_t hashes_num) {
+    anactx->hashes = hashes;
     anactx->hashes_num = hashes_num;
 
     anactx->hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
@@ -121,13 +124,40 @@ cl_int anactx_submit_permut_task(anactx *anactx, permut_task *task) {
 }
 
 cl_int anactx_flush_tasks_buffer(anactx *anactx) {
+/*
+    FILE *file = fopen("buffer.log", "w");
+    for (int i=0; i<anactx->tasks_in_buffer_count; i++) {
+        permut_task *task = &anactx->tasks_buffer[i];
+        
+        fprintf(file, "task %d, start from %d\n", i, task->start_from);
+
+        for (int j=0; j<MAX_OFFSETS_LENGTH && task->offsets[j]; j++) {
+            fprintf(file, "%d ", task->offsets[j]);
+        }
+        fprintf(file, "\n");
+
+        for (int j=0; j<MAX_OFFSETS_LENGTH && task->offsets[j]; j++) {
+            char offset = task->offsets[j];
+            if (offset < 0) {
+                offset = -offset;
+            } else {
+                fprintf(file, "*");
+            }
+            offset--;
+            fprintf(file, "%s ", &task->all_strs[offset]);
+        }
+        fprintf(file, "\n\n");
+    }
+    fclose(file);
+*/
+
     cl_int errcode;
     errcode = anactx_wait_for_cur_kernel(anactx);
     ret_iferr(errcode, "failed to wait for current kernel");
 
     anakrnl_permut *krnl = malloc(sizeof(anakrnl_permut));
     ret_iferr(!krnl, "failed to malloc kernel");
-    errcode = anakrnl_permut_create(krnl, anactx, MAX_ITERS_PER_ITEM, anactx->tasks_buffer, anactx->tasks_in_buffer_count);
+    errcode = anakrnl_permut_create(krnl, anactx, MAX_ITERS_PER_TASK, anactx->tasks_buffer, anactx->tasks_in_buffer_count);
     ret_iferr(errcode, "failed to create kernel");
 
     errcode = anakrnl_permut_enqueue(krnl);
@@ -150,7 +180,29 @@ cl_int anactx_wait_for_cur_kernel(anactx *anactx) {
     cl_int errcode;
     errcode = anakrnl_permut_wait(krnl);
     ret_iferr(errcode, "failed to wait for current kernel");
-    
+
+    const uint32_t *hashes_reversed = anactx_read_hashes_reversed(anactx, &errcode);
+    char hash_ascii[33];
+    uint32_t hashes_found = 0;
+    for(int i=0; i<anactx->hashes_num; i++) {
+        char* hash_reversed = (char*)hashes_reversed + i*MAX_STR_LENGTH;
+        if (strlen(hash_reversed)) {
+            hashes_found++;
+        }
+    }
+
+    if (hashes_found > anactx->hashes_seen) {
+        anactx->hashes_seen = hashes_found;
+        for(int i=0; i<anactx->hashes_num; i++) {
+            char* hash_reversed = (char*)hashes_reversed + i*MAX_STR_LENGTH;
+            if (strlen(hash_reversed)) {
+                hash_to_ascii(anactx->hashes+i*4, hash_ascii);
+                printf("%s:  %s\n", hash_ascii, hash_reversed);
+            }
+        }
+        printf("\n");
+    }
+
     errcode = anakrnl_permut_free(krnl);
     ret_iferr(errcode, "failed to free kernel");
 
@@ -160,19 +212,19 @@ cl_int anactx_wait_for_cur_kernel(anactx *anactx) {
     return CL_SUCCESS;
 }
 
-cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t iters_per_item, permut_task *templates, uint32_t num_templates) {
+cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t iters_per_item, permut_task *tasks, uint32_t num_tasks) {
     cl_int errcode;
 
     anakrnl->ctx = anactx;
-    anakrnl->iters_per_item = iters_per_item;
-    anakrnl->num_templates = num_templates;
-    anakrnl->templates = templates;
+    anakrnl->iters_per_task = iters_per_item;
+    anakrnl->num_tasks = num_tasks;
+    anakrnl->tasks = tasks;
 
     anakrnl->kernel = clCreateKernel(anactx->program, "permut", &errcode);
     ret_iferr(errcode, "failed to create permut kernel");
 
-    anakrnl->mem_permut_templates = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_templates*sizeof(permut_task), templates, &errcode);
-    ret_iferr(errcode, "failed to create mem_permut_templates");
+    anakrnl->mem_permut_tasks = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, num_tasks*sizeof(permut_task), tasks, &errcode);
+    ret_iferr(errcode, "failed to create mem_permut_tasks");
 
 /*
         __kernel void permut(
@@ -182,7 +234,7 @@ cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t i
                      uint hashes_num,
             __global uint *hashes_reversed)
 */
-    errcode |= clSetKernelArg(anakrnl->kernel, 0, sizeof (cl_mem), &anakrnl->mem_permut_templates);
+    errcode |= clSetKernelArg(anakrnl->kernel, 0, sizeof (cl_mem), &anakrnl->mem_permut_tasks);
     errcode |= clSetKernelArg(anakrnl->kernel, 1, sizeof (iters_per_item), &iters_per_item);
     errcode |= clSetKernelArg(anakrnl->kernel, 2, sizeof (cl_mem), &anactx->mem_hashes);
     errcode |= clSetKernelArg(anakrnl->kernel, 3, sizeof (anactx->hashes_num), &anactx->hashes_num);
@@ -192,7 +244,7 @@ cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t i
 }
 
 cl_int anakrnl_permut_enqueue(anakrnl_permut *anakrnl) {
-    size_t globalWorkSize[] = {anakrnl->num_templates, 0, 0};
+    size_t globalWorkSize[] = {anakrnl->num_tasks, 0, 0};
     return clEnqueueNDRangeKernel(anakrnl->ctx->queue, anakrnl->kernel, 1, NULL, globalWorkSize, NULL, 0, NULL, &anakrnl->event);
 }
 
@@ -201,6 +253,6 @@ cl_int anakrnl_permut_wait(anakrnl_permut *anakrnl) {
 }
 
 cl_int anakrnl_permut_free(anakrnl_permut *anakrnl) {
-    clReleaseMemObject(anakrnl->mem_permut_templates);
+    clReleaseMemObject(anakrnl->mem_permut_tasks);
     clReleaseKernel(anakrnl->kernel);
 }

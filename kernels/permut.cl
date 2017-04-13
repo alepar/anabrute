@@ -171,7 +171,7 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
     __global const permut_template *tmpl = &permut_templates[id];
 
     uint key[16];
-    ulong a = id*iters_per_item+1;
+    ulong a = tmpl->start_from;
 
     char all_strs[MAX_STR_LENGTH];
     uint *all_strs_uint = all_strs; // read as uints
@@ -249,7 +249,7 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
             wcs++;
         }
         wcs--;
-        /* padding code (borrowed from MD5_eq.c) */
+        // padding code (borrowed from MD5_eq.c)
         PUTCHAR(key, wcs, 0x80);
         PUTCHAR(key, 56, wcs << 3);
         PUTCHAR(key, 57, wcs >> 5);
@@ -282,7 +282,7 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
         char k1 = -1;
         char found = 0;
 
-        for (uchar io=offsets_len-1; io>=0; io--) {
+        for (char io=offsets_len-1; io>=0; io--) {
             if (offsets[io]>0) {
                 k1 =k;
                 k = io;
@@ -298,7 +298,7 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
             break;
         }
 
-        uchar l;
+        char l;
         for (l=offsets_len-1; l>k; l--) {
             if (offsets[l]>offsets[k]) {
                 break;
@@ -309,10 +309,10 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
         offsets[k] ^= offsets[l];
         offsets[l] ^= offsets[k];
 
-        uchar li=k1, ri=offsets_len-1;
+        char li=k1, ri=offsets_len-1;
         while(li<ri) {
-            while(offsets[li]<=0) li++;
-            while(offsets[ri]<=0) ri--;
+            while(offsets[li]<=0 && li<ri) li++;
+            while(offsets[ri]<=0 && li<ri) ri--;
 
             if (li < ri) {
                 offsets[li] ^= offsets[ri];
@@ -325,5 +325,4 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
 
         counter++;
     } while (counter<iters_per_item);
-
 }

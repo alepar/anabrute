@@ -1,51 +1,70 @@
 #include <errno.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <stdbool.h>
-#include <stdlib.h>
+
+#ifdef __APPLE__
+    #include <unitypes.h>
+    #include <event.h>
+#else
+    #include <sys/time.h>
+#endif
 
 #include "anatypes.h"
+#include "fact.h"
+#include "hashes.h"
+#include "ocl_layer.h"
 
 stack_item stack[20];
 string_and_count scs[120];
 char_counts_strings* dict_by_char[CHARCOUNT][MAX_DICT_SIZE];
 int dict_by_char_len[CHARCOUNT] = {0};
 
-FILE *permuts;
-
-void print_scs(const string_and_count *scs, const int scs_len) {
-    fprintf(permuts, "\t");
-    for (int i=0; i < scs_len; i++) {
-        if (scs[i].count) {
-            fprintf(permuts, "%s", scs[i].str);
-            if (scs[i].count>1) {
-                fprintf(permuts, "*%d", scs[i].count);
-            }
-            fprintf(permuts, " ");
+int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs) {
+    int permutable_count = 0;
+    for (int i=0; i<permut_len; i++) {
+        if (permut[i] > 0) {
+            permutable_count++;
         }
     }
-    fprintf(permuts, "\n");
-}
 
-void print_permut(int8_t permut[], int len, char *strs) {
-    fprintf(permuts, "\t\t");
-    for (int i=0; i<len; i++) {
-        if (permut[i] < 0) {
-            fprintf(permuts, "%s ", &strs[-permut[i]-1]);
-        } else if (permut[i] > 0) {
-            fprintf(permuts, "*%s ", &strs[permut[i]-1]);
-        } else {
-            fprintf(permuts, "* ");
+    if (permutable_count > 11) { // TODO skip lengthes > 11 for now
+        return 0;
+    }
+
+    for (int i=0; i<permut_len; i++) {
+        if (permut[i] > MAX_STR_LENGTH || permut[i] < -MAX_STR_LENGTH) {
+            printf("long gotcha!\n");
+            return 0;
         }
     }
-    fprintf(permuts, "\n");
+
+    permut_task task;
+    cl_int errcode;
+
+    // TODO superfluos memory copy
+    permut[permut_len] = 0;
+    memcpy(&task.all_strs, all_strs, MAX_STR_LENGTH);
+    memcpy(&task.offsets, permut, MAX_OFFSETS_LENGTH);
+
+    uint64_t permut_iters = fact(permutable_count);
+    for (uint64_t batchi=0; batchi < (permut_iters/MAX_ITERS_PER_TASK+1); batchi++) {
+        task.start_from = batchi*MAX_ITERS_PER_TASK+1;
+        errcode = anactx_submit_permut_task(anactx, &task);
+        ret_iferr(errcode, "failed to submit task");
+    }
+
+    return 0;
 }
 
-void recurse_combs(char *all_strs, string_idx_and_count sics[], int sics_len, int sics_idx, int8_t permut[], int permut_len, int start_idx) {
+int recurse_combs(anactx* anactx, char *all_strs, string_idx_and_count sics[], int sics_len, int sics_idx, int8_t permut[], int permut_len, int start_idx) {
+    int errcode=0;
+
     if (sics_idx >= sics_len) {
         int si, di=0;
         for (si = 0; si < sics_len; si++) {
@@ -54,15 +73,18 @@ void recurse_combs(char *all_strs, string_idx_and_count sics[], int sics_len, in
                 permut[di] = sics[si].offset+1;
             }
         }
-        print_permut(permut, permut_len, all_strs);
-// TODO       iter_permuts(permut, permut_len, all_strs);
+
+        if(errcode = submit_tasks(anactx, permut, permut_len, all_strs)) {
+            return errcode;
+        }
+
         for (di=0; di<permut_len; di++) {
             if (permut[di] > 0) {
                 permut[di] = 0;
             }
         }
     } else if (start_idx > permut_len && sics[sics_idx].count > 0) {
-        fprintf(permuts, "\t\tbailout\n");
+        // failsafe
     } else if (sics[sics_idx].count > 1 || start_idx > 0) {
         for (int i=start_idx; i<permut_len; i++) {
             if (permut[i] == 0) {
@@ -70,46 +92,55 @@ void recurse_combs(char *all_strs, string_idx_and_count sics[], int sics_len, in
                 sics[sics_idx].count--;
 
                 if (sics[sics_idx].count == 0) {
-                    recurse_combs(all_strs, sics, sics_len, sics_idx+1, permut, permut_len, 0);
+                    errcode = recurse_combs(anactx, all_strs, sics, sics_len, sics_idx+1, permut, permut_len, 0);
                 } else if (sics[sics_idx].count <= permut_len-i-1) {
-                    recurse_combs(all_strs, sics, sics_len, sics_idx, permut, permut_len, i+1);
+                    errcode = recurse_combs(anactx, all_strs, sics, sics_len, sics_idx, permut, permut_len, i+1);
                 }
+
+                if (errcode) return errcode;
 
                 sics[sics_idx].count++;
                 permut[i] = 0;
             }
         }
     } else {
-        recurse_combs(all_strs, sics, sics_len, sics_idx+1, permut, permut_len, 0);
+        return recurse_combs(anactx, all_strs, sics, sics_len, sics_idx+1, permut, permut_len, 0);
     }
+
+    return errcode;
 }
 
-void recurse_string_combs(stack_item *stack, int stack_len, int stack_idx, int string_idx, string_and_count *scs, int scs_idx) {
+int recurse_string_combs(anactx* anactx, stack_item *stack, int stack_len, int stack_idx, int string_idx, string_and_count *scs, int scs_idx) {
+    int errcode=0;
     if (stack_idx >= stack_len) {
-        print_scs(scs, scs_idx);
-
         string_idx_and_count sics[scs_idx];
 
         uint8_t strs_count = 0;
         for (int i=0; i<scs_idx; i++) {
-            strs_count += strlen(scs[i].str)+1;
+            if (scs[i].count) {
+                strs_count += strlen(scs[i].str)+1;
+            }
         }
 
         uint8_t word_count = 0;
         char all_strs[strs_count];
         int8_t all_offs=0;
+        int sics_len=0;
         for (int i=0; i<scs_idx; i++) {
-            word_count += scs[i].count;
-            sics[i].count = scs[i].count;
-            sics[i].offset = all_offs;
-            for (int j=0; j<=strlen(scs[i].str); j++) {
-                all_strs[all_offs++] = scs[i].str[j];
+            if (scs[i].count) {
+                word_count += scs[i].count;
+                sics[sics_len].count = scs[i].count;
+                sics[sics_len].offset = all_offs;
+                sics_len++;
+                for (int j=0; j<=strlen(scs[i].str); j++) {
+                    all_strs[all_offs++] = scs[i].str[j];
+                }
             }
         }
 
         int8_t permut[word_count];
         memset(permut, 0, word_count);
-        recurse_combs(all_strs, sics, scs_idx, 0, permut, word_count, 0);
+        return recurse_combs(anactx, all_strs, sics, sics_len, 0, permut, word_count, 0);
     } else if (stack[stack_idx].ccs->strings_len > string_idx+1) {
         const uint8_t orig_count = stack[stack_idx].count;
         for (uint8_t i=0; i <= orig_count; i++) {
@@ -117,18 +148,23 @@ void recurse_string_combs(stack_item *stack, int stack_len, int stack_idx, int s
 
             scs[scs_idx].str = stack[stack_idx].ccs->strings[string_idx];
             scs[scs_idx].count = i;
-            recurse_string_combs(stack, stack_len, stack_idx, string_idx + 1, scs, scs_idx + 1);
+            errcode=recurse_string_combs(anactx, stack, stack_len, stack_idx, string_idx + 1, scs, scs_idx + 1);
+            if (errcode) return errcode;
         }
         stack[stack_idx].count = orig_count;
     } else {
         scs[scs_idx].str = stack[stack_idx].ccs->strings[string_idx];
         scs[scs_idx].count = stack[stack_idx].count;
-        recurse_string_combs(stack, stack_len, stack_idx + 1, 0, scs, scs_idx + 1);
+        return recurse_string_combs(anactx, stack, stack_len, stack_idx + 1, 0, scs, scs_idx + 1);
     }
+
+    return errcode;
 }
 
-void recurse_dict_words(char_counts remainder, int curchar, int curdictidx, int stack_len) {
-/*    printf("\t%d\t%d\t%d\t%d\t||\t", remainder.length, curchar, curdictidx, stack_len);
+int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int curdictidx, int stack_len) {
+    int errcode=0;
+/*    printf("[%d] recurse_dict_words || ", anactx->thread_id);
+    printf("\t%d\t%d\t%d\t%d\t||\t", remainder->length, curchar, curdictidx, stack_len);
     for (int i=0; i<stack_len; i++) {
         printf("%s", stack[i].ccs->strings[0]);
         if (stack[i].count > 1) {
@@ -139,30 +175,39 @@ void recurse_dict_words(char_counts remainder, int curchar, int curdictidx, int 
     }
     printf("\n");*/
 
-    if (remainder.length == 0) {
+    if (remainder->length == 0) {
+        int word_count=0;
         for (int i=0; i<stack_len; i++) {
-            fprintf(permuts, "%s", stack[i].ccs->strings[0]);
-            if (stack[i].count > 1) {
-                fprintf(permuts, "*%d ", stack[i].count);
-            } else {
-                fprintf(permuts, " ");
-            }
+            word_count+=stack[i].count;
         }
-        fprintf(permuts, "\n");
-        recurse_string_combs(stack, stack_len, 0, 0, scs, 0);
+        if(word_count > 9) { // TODO skip
+            return 0;
+        }
 
-        return;
+        return recurse_string_combs(anactx, stack, stack_len, 0, 0, scs, 0);
     }
 
     if(curchar >= CHARCOUNT) {
-        return;
+        return 0;
     }
 
-    for (int i=curdictidx; i<dict_by_char_len[curchar]; i++) {
+    int step = 1;
+    // TODO parallelization
+/*
+    if (stack_len == 0) {
+        step = anactx->num_threads;
+    }
+*/
+
+    for (int i=curdictidx; i<dict_by_char_len[curchar]; i+=step) {
+        if (stack_len == 0) {
+            printf("L0 %d/%d: %s\n", i, dict_by_char_len[curchar], dict_by_char[curchar][i]->strings[0]);
+        }
+
         stack[stack_len].ccs = dict_by_char[curchar][i];
 
         char_counts next_remainder;
-        char_counts_copy(&remainder, &next_remainder);
+        char_counts_copy(remainder, &next_remainder);
         for (uint8_t ccs_count=1; char_counts_subtract(&next_remainder, &dict_by_char[curchar][i]->counts); ccs_count++) {
             stack[stack_len].count = ccs_count;
 
@@ -174,11 +219,12 @@ void recurse_dict_words(char_counts remainder, int curchar, int curdictidx, int 
                 next_idx = 0;
             }
 
-            recurse_dict_words(next_remainder, next_char, next_idx, stack_len + 1);
+            errcode = recurse_dict_words(anactx, &next_remainder, next_char, next_idx, stack_len + 1);
+            if (errcode) return errcode;
         }
     }
 
-    return;
+    return errcode;
 }
 
 int read_dict(char_counts_strings *dict, uint32_t *dict_length, char_counts *seed_phrase) {
@@ -232,11 +278,71 @@ int read_dict(char_counts_strings *dict, uint32_t *dict_length, char_counts *see
         }
     }
     fclose(dictFile);
+    return 0;
+}
+
+static const char* size_suffixes[] = {"", "K", "M", "G", "T", "P"};
+void format_bignum(uint64_t size, char *dst, uint16_t div) {
+    int divs = 0;
+    while (size/div > 1) {
+        size = size/div;
+        divs++;
+    }
+    sprintf(dst, "%lu%s", size, size_suffixes[divs]);
+}
+
+const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
+    FILE *const fd = fopen(file_name, "r");
+    if (!fd) {
+        return 0;
+    }
+
+    fseek(fd, 0L, SEEK_END);
+    const uint32_t file_size = (const uint32_t) ftell(fd);
+    rewind(fd);
+
+    const uint32_t hashes_num_est = (file_size + 1) / 33;
+    uint32_t hashes_num = 0;
+
+    *hashes = malloc(hashes_num_est*16);
+
+    char buf[128];
+    while(fgets(buf, sizeof(buf), fd) != NULL) {
+        for (int i=0; i<sizeof(buf); i++) {
+            if (buf[i] == '\n' || buf[i] == '\r') {
+                buf[i] = 0;
+            }
+        }
+        if (strlen(buf) != 32) {
+            fprintf(stderr, "not a hash! (%s)\n", buf);
+        }
+
+        if (hashes_num>hashes_num_est) {
+            fprintf(stderr, "too many hashes? skipping tail...\n");
+            break;
+        }
+
+        ascii_to_hash(buf, &((*hashes)[hashes_num*4]));
+        hashes_num++;
+    }
+
+    return hashes_num;
+}
+
+void* run_brute_thread(void *ptr) {
+    anactx *anactx = ptr;
+
+    char_counts local_remainer;
+    char_counts_copy(anactx->seed_phrase, &local_remainer);
+    int errcode = recurse_dict_words(anactx, &local_remainer, 0, anactx->thread_id, 0);
+
+    if (errcode) fprintf(stderr, "[Thread %d] errcode %d\n", anactx->thread_id, errcode);
+    return NULL;
 }
 
 int main(int argc, char *argv[]) {
 
-    permuts = fopen("output.permuts", "w");
+    // ----------- read dict
 
     char_counts seed_phrase;
     char_counts_create(seed_phrase_str, &seed_phrase);
@@ -258,9 +364,94 @@ int main(int argc, char *argv[]) {
     // todo resort dict_by_char?
     //   by length or char occurs?
 
-    recurse_dict_words(seed_phrase, 0, 0, 0);
+    // ----------- setup opencl
 
+    cl_platform_id platform_id;
+    cl_uint num_platforms;
+    clGetPlatformIDs (1, &platform_id, &num_platforms);
+    ret_iferr(!num_platforms, "no platforms");
+
+    cl_uint num_devices;
+    clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, 0, NULL, &num_devices);
+    cl_device_id device_ids[num_devices];
+    clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, num_devices, device_ids, &num_devices);
+    ret_iferr(!num_devices, "no devices");
+
+    uint32_t num_gpus = 0;
+    for (int i=0; i<num_devices; i++) {
+        cl_device_type dev_type;
+        clGetDeviceInfo (device_ids[i], CL_DEVICE_TYPE, sizeof(dev_type), &dev_type, NULL);
+        if (dev_type > CL_DEVICE_TYPE_CPU) {
+            num_gpus++;
+        }
+    }
+
+    if (num_gpus) {
+        int d=0;
+        for (int s=0; s<num_devices; s++) {
+            cl_device_type dev_type;
+            clGetDeviceInfo (device_ids[s], CL_DEVICE_TYPE, sizeof(dev_type), &dev_type, NULL);
+            if (dev_type > CL_DEVICE_TYPE_CPU) {
+                device_ids[d++] = device_ids[s];
+            }
+        }
+        num_devices = num_gpus;
+    }
+
+    char char_buf[1024];
+    for (int i=0; i<num_devices; i++) {
+        cl_ulong local_mem; char local_mem_str[32];
+        cl_ulong global_mem; char global_mem_str[32];
+
+        clGetDeviceInfo(device_ids[i], CL_DEVICE_GLOBAL_MEM_SIZE, 8, &global_mem, NULL);
+        clGetDeviceInfo(device_ids[i], CL_DEVICE_LOCAL_MEM_SIZE, 8, &local_mem, NULL);
+        clGetDeviceInfo (device_ids[i], CL_DEVICE_NAME, 1024, char_buf, NULL);
+
+        format_bignum(global_mem, global_mem_str, 1024);
+        format_bignum(local_mem, local_mem_str, 1024);
+        printf("OpenCL device #%d: %s (g:%siB l:%siB)\n", i+1, char_buf, global_mem_str, local_mem_str);
+    }
+    printf("\n");
+
+    uint32_t *hashes;
+    const uint32_t hashes_num = read_hashes("input.hashes", &hashes);
+    ret_iferr(!hashes_num, "failed to read hashes");
+    ret_iferr(!hashes, "failed to allocate hashes");
+
+    cl_int errcode;
+    anactx anactxs[num_devices];
+    for (uint32_t i=0; i<num_devices; i++) {
+        errcode = anactx_create(&anactxs[i], platform_id, device_ids[i]);
+        ret_iferr(errcode, "failed to create anactx");
+
+        anactxs[i].num_threads = num_devices;
+        anactxs[i].thread_id = i;
+        anactxs[i].seed_phrase = &seed_phrase;
+
+        errcode = anactx_set_input_hashes(&anactxs[i], hashes, hashes_num);
+        ret_iferr(errcode, "failed to set input hashes");
+    }
+
+    // ----------- run
+
+    run_brute_thread(&anactxs[0]);
+//    run_brute_thread(&anactxs[1]);
+
+//    printf("starting %d threads\n", num_devices);
+//    pthread_t threads[num_devices];
+//    for (uint32_t i=0; i<num_devices; i++) {
+//        int err = pthread_create(&threads[i], NULL, run_brute_thread, &anactxs[i]);
+//        ret_iferr(err, "failed to create thread");
+//    }
+
+    // TODO print out stats
+    // TODO join with threads
+
+//    for (uint32_t i=0; i<num_devices; i++) {
+//        int err = pthread_join(threads[i], NULL);
+//        ret_iferr(err, "failed to join thread");
+//    }
+
+    // TODO free anactx
     printf("done\n");
-
-    fclose(permuts);
 }

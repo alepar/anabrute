@@ -24,6 +24,74 @@ void format_bignum(uint64_t size, char *dst, uint16_t div) {
     sprintf(dst, "%lu%s", size, size_suffixes[divs]);
 }
 
+void* run_kernel(void *ptr) {
+    anactx *anactx = ptr;
+
+    FILE *file = fopen("submit.dump.crash1", "r");
+/*
+    fseek(file, 0L, SEEK_END);
+    uint32_t buffer_len = (const uint32_t) ftell(file);
+    rewind(file);
+*/
+    int fseekres = fseek(file, -152 * sizeof(permut_task), SEEK_END);
+    if (fseekres) {
+        printf("fseek caput\n");
+        return NULL;
+    }
+
+    int num_tasks = 1;
+    permut_task *tasks = calloc(num_tasks, sizeof(permut_task));
+    uint32_t read = fread(tasks, sizeof(permut_task), num_tasks, file);
+    fclose(file);
+
+    if (read != num_tasks) {
+        printf("oops\n");
+        return NULL;
+    }
+
+    {
+        printf("task %d, start from %d\n", 0, tasks->start_from);
+
+        for (int j = 0; j < MAX_OFFSETS_LENGTH && tasks->offsets[j]; j++) {
+            printf("%d ", tasks->offsets[j]);
+        }
+        printf("\n");
+
+        for (int j = 0; j < MAX_OFFSETS_LENGTH && tasks->offsets[j]; j++) {
+            char offset = tasks->offsets[j];
+            if (offset < 0) {
+                offset = -offset;
+            } else {
+                printf("*");
+            }
+            offset--;
+            printf("%s ", &tasks->all_strs[offset]);
+        }
+        printf("\n\n");
+    }
+
+    struct timeval t0, t1;
+    gettimeofday(&t0, 0);
+    long elapsed_millis;
+
+    cl_int errcode;
+    for (int i=0; i<num_tasks; i++) {
+        anactx_submit_permut_task(anactx, tasks+i);
+    }
+    errcode = anactx_flush_tasks_buffer(anactx);
+    ret_iferr(errcode, "failed to flush tasks buffer");
+    errcode = anactx_wait_for_cur_kernel(anactx);
+    ret_iferr(errcode, "failed to wait for last kernel");
+
+    gettimeofday(&t1, 0);
+    elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
+    char char_buf[1024];
+    format_bignum(1000L * MAX_ITERS_PER_TASK * num_tasks / elapsed_millis, char_buf, 1000);
+    printf("[Thread %d] took %.2fsec, speed: ~%sHash/s\n", anactx->thread_id, elapsed_millis / 10 / 100.0, char_buf);
+
+    return CL_SUCCESS;
+}
+
 const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
     FILE *const fd = fopen(file_name, "r");
     if (!fd) {
@@ -31,11 +99,11 @@ const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
     }
 
     fseek(fd, 0L, SEEK_END);
-    const long file_size = ftell(fd);
+    const uint32_t file_size = (const uint32_t) ftell(fd);
     rewind(fd);
 
-    const long hashes_num_est = (file_size + 1) / 33;
-    long hashes_num = 0;
+    const uint32_t hashes_num_est = (file_size + 1) / 33;
+    uint32_t hashes_num = 0;
 
     *hashes = malloc(hashes_num_est*16);
 
@@ -60,44 +128,6 @@ const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
     }
 
     return hashes_num;
-}
-
-void* run_kernel(void *ptr) {
-    anactx *anactx = ptr;
-
-    char all_strs[MAX_STR_LENGTH] = "x\0a\0b\0c\0d\0e\0f\0g\0h\0i\0j\0k\0l\0m\0";
-    char offsets[MAX_OFFSETS_LENGTH] = {-1, 3, 5, 7, 9, -1, 11, 13, 15, 17, 19, 21, 23, -1, 25, 27};
-
-    permut_task task;
-
-    memcpy(&task.all_strs, &all_strs, MAX_STR_LENGTH);
-    memcpy(&task.offsets, &offsets, MAX_OFFSETS_LENGTH);
-
-    struct timeval t0, t1;
-    gettimeofday(&t0, 0);
-    long elapsed_millis;
-
-    uint32_t i;
-    cl_int errcode;
-    for (i=0; i<PERMUT_TASKS_IN_BATCH*3; i++) {
-//        printf("[%d] DEBUG2 %d\n", anactx->thread_id, i);
-        task.start_from = (uint)(MAX_ITERS_PER_ITEM*i+1);
-        errcode = anactx_submit_permut_task(anactx, &task);
-        ret_iferr(errcode, "failed to submit task");
-    }
-
-    errcode = anactx_flush_tasks_buffer(anactx);
-    ret_iferr(errcode, "failed to flush tasks buffer");
-    errcode = anactx_wait_for_cur_kernel(anactx);
-    ret_iferr(errcode, "failed to wait for last kernel");
-
-    gettimeofday(&t1, 0);
-    elapsed_millis = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
-    char char_buf[1024];
-    format_bignum(1000L * MAX_ITERS_PER_ITEM * i / elapsed_millis, char_buf, 1000);
-    printf("[Thread %d] took %.2fsec, speed: ~%sHash/s\n", anactx->thread_id, elapsed_millis / 10 / 100.0, char_buf);
-
-    return CL_SUCCESS;
 }
 
 int main(int argc, char *argv[]) {
@@ -166,22 +196,15 @@ int main(int argc, char *argv[]) {
         ret_iferr(errcode, "failed to set input hashes");
     }
 
-    for (int ii=0; ii<3; ii++) {
-        pthread_t threads[num_devices];
-        for (uint32_t i=0; i<num_devices; i++) {
-            int err = pthread_create(&threads[i], NULL, run_kernel, &anactxs[i]);
-            ret_iferr(err, "failed to create thread");
-        }
-        for (uint32_t i=0; i<num_devices; i++) {
-            int err = pthread_join(threads[i], NULL);
-            ret_iferr(err, "failed to create thread");
-        }
+    for (int i=0; i<1; i++) {
+        printf("iter\n");
+        run_kernel(&anactxs[0]);
     }
 
     const uint32_t *hashes_reversed = anactx_read_hashes_reversed(&anactxs[0], &errcode);
     ret_iferr(errcode, "failed to read hashes_reversed");
 
-    for(int i=0; i<5; i++) {
+    for(int i=0; i<hashes_num; i++) {
         char hash_ascii[33];
         hash_to_ascii(&hashes[i*4], hash_ascii);
         printf("%s:  %s\n", hash_ascii, (char*)&hashes_reversed[i*MAX_STR_LENGTH/4]);
