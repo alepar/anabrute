@@ -27,6 +27,7 @@ void tasks_buffer_add_task(tasks_buffer* buf, char* all_strs, int8_t* offsets) {
 
 int tasks_buffers_create(tasks_buffers* buffs) {
     buffs->num_ready = 0;
+    buffs->is_closed = false;
 
     for (int i=0; i<TASKS_BUFFERS_SIZE; i++) {
         buffs->arr[i] = NULL;
@@ -91,6 +92,12 @@ int tasks_buffers_get_buffer(tasks_buffers* buffs, tasks_buffer** buf) {
     ret_iferr(errcode, "failed to lock mutex while removing buffer");
 
     while (buffs->num_ready == 0) {
+        if (buffs->is_closed) {
+            pthread_mutex_unlock(&buffs->mutex);
+            *buf = NULL;
+            return 0;
+        }
+
         errcode = pthread_cond_wait(&buffs->inc_cond, &buffs->mutex);
         if (errcode) {
             pthread_mutex_unlock(&buffs->mutex);
@@ -111,7 +118,25 @@ int tasks_buffers_get_buffer(tasks_buffers* buffs, tasks_buffer** buf) {
     errcode = pthread_cond_signal(&buffs->dec_cond);
     if (errcode) {
         pthread_mutex_unlock(&buffs->mutex);
-        ret_iferr(errcode, "failed to signal decrease while adding buffer");
+        ret_iferr(errcode, "failed to signal decrease while removing buffer");
+    }
+
+    pthread_mutex_unlock(&buffs->mutex);
+
+    return 0;
+}
+
+int tasks_buffers_close(tasks_buffers* buffs) {
+    int errcode=0;
+    errcode = pthread_mutex_lock(&buffs->mutex);
+    ret_iferr(errcode, "failed to lock mutex while closing buffer");
+
+    buffs->is_closed = true;
+
+    errcode = pthread_cond_broadcast(&buffs->inc_cond);
+    if (errcode) {
+        pthread_mutex_unlock(&buffs->mutex);
+        ret_iferr(errcode, "failed to broadcast close");
     }
 
     pthread_mutex_unlock(&buffs->mutex);

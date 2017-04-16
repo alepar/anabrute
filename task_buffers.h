@@ -18,19 +18,19 @@ void tasks_buffer_free(tasks_buffer* buf);
 bool tasks_buffer_isfull(tasks_buffer* buf);
 void tasks_buffer_add_task(tasks_buffer* buf, char* all_strs, int8_t* offsets);
 
-#define TASKS_BUFFERS_SIZE 256
-
 typedef struct tasks_buffers_s {
     volatile tasks_buffer* arr[TASKS_BUFFERS_SIZE];
     volatile uint32_t num_ready;
     pthread_mutex_t mutex;
     pthread_cond_t inc_cond;
     pthread_cond_t dec_cond;
+    volatile bool is_closed;
 } tasks_buffers;
 
 int tasks_buffers_create(tasks_buffers* buffs);
 int tasks_buffers_free(tasks_buffers* buffs);
 int tasks_buffers_add_buffer(tasks_buffers* buffs, tasks_buffer* buf);
 int tasks_buffers_get_buffer(tasks_buffers* buffs, tasks_buffer** buf);
+int tasks_buffers_close(tasks_buffers* buffs);
 
 #endif //ANABRUTE_TASK_BUFFERS_H

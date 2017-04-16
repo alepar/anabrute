@@ -232,10 +232,6 @@ int recurse_dict_words(cpu_cruncher_ctx* ctx, char_counts *remainder, int curcha
         }
     }
 
-    if (stack_len == 0) {
-        ctx->progress_l0_index = ctx->dict_by_char_len[0];
-    }
-
     return errcode;
 }
 
@@ -354,9 +350,12 @@ void* run_cpu_cruncher_thread(void *ptr) {
 
     if (ctx->local_buffer != NULL && ctx->local_buffer->num_tasks > 0) {
         errcode = tasks_buffers_add_buffer(ctx->tasks_buffs, ctx->local_buffer);
+        ctx->progress_l0_index = ctx->dict_by_char_len[0]; // mark this cpu cruncher as done
         ret_iferr(errcode, "cpu cruncher failed to pass last buffer to gpu crunchers");
         ctx->local_buffer = NULL;
     }
+
+    ctx->progress_l0_index = ctx->dict_by_char_len[0]; // mark this cpu cruncher as done
 
     if (errcode) fprintf(stderr, "[cpucruncher %d] errcode %d\n", ctx->cpu_cruncher_id, errcode);
     return NULL;
@@ -365,15 +364,16 @@ void* run_cpu_cruncher_thread(void *ptr) {
 void* run_gpu_cruncher_thread(void *ptr) {
     gpu_cruncher_ctx *ctx = ptr;
 
-    // TODO stop once cpu threads are done
     while(1) {
         tasks_buffer *buf;
         tasks_buffers_get_buffer(ctx->tasks_buffs, &buf);
-        printf("got buffer\n");
+        if (buf == NULL) break; // ran out of buffers
         tasks_buffer_free(buf);
-        sleep(1);
+        ctx->consumed++;
     }
 
+    ctx->is_running = false;
+    return NULL;
 }
 
 int main(int argc, char *argv[]) {
@@ -487,7 +487,7 @@ int main(int argc, char *argv[]) {
 
     pthread_t gpu_threads[num_gpu_crunchers];
     for (int i=0; i<num_gpu_crunchers; i++) {
-        int err = pthread_create(cpu_threads+i, NULL, run_gpu_cruncher_thread, gpu_cruncher_ctxs+i);
+        int err = pthread_create(gpu_threads+i, NULL, run_gpu_cruncher_thread, gpu_cruncher_ctxs+i);
         ret_iferr(err, "failed to create gpu thread");
     }
 
@@ -502,15 +502,34 @@ int main(int argc, char *argv[]) {
             if (progress > max) max = progress;
             if (progress < min) min = progress;
         }
-        printf("%d cpus: %d-%d/%d | %d buffs | %d gpus \r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers);
 
-        // TODO http://stackoverflow.com/questions/2156353/how-do-you-query-a-pthread-to-see-if-it-is-still-running
-        if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) break;
+        uint32_t buffs_gpus_consumed = 0;
+        for (int i=0; i<num_gpu_crunchers; i++) {
+            buffs_gpus_consumed += gpu_cruncher_ctxs[i].consumed;
+        }
+        printf("%d cpus: %d-%d/%d | %d buffs | %d gpus, %d buffs done\r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, buffs_gpus_consumed);
+
+        if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) {
+            tasks_buffers_close(&tasks_buffs);
+        }
+
+        bool gpu_is_running = false;
+        for (int i=0; i<num_gpu_crunchers; i++) {
+            gpu_is_running |= gpu_cruncher_ctxs[i].is_running;
+        }
+        if (!gpu_is_running) {
+            printf("\n");
+            break;
+        }
     }
 
-    for (uint32_t i=0; i<1; i++) {
+    for (uint32_t i=0; i<num_cpu_crunchers; i++) {
         int err = pthread_join(cpu_threads[i], NULL);
-        ret_iferr(err, "failed to join thread");
+        ret_iferr(err, "failed to join cpu thread");
+    }
+    for (uint32_t i=0; i<num_gpu_crunchers; i++) {
+        int err = pthread_join(gpu_threads[i], NULL);
+        ret_iferr(err, "failed to join gpu thread");
     }
 
     // TODO free gpu_cruncher_ctx

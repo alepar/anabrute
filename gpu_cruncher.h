@@ -1,5 +1,5 @@
-#ifndef OPENCL_TEST_OCL_TYPES_H
-#define OPENCL_TEST_OCL_TYPES_H
+#ifndef GPU_CRUNCHER_H
+#define GPU_CRUNCHER_H
 
 #include "common.h"
 #include "permut_types.h"
@@ -31,7 +31,8 @@ typedef struct gpu_cruncher_ctx_s {
     uint32_t hashes_seen;
 
     // progress
-    // TODO
+    volatile bool is_running;
+    volatile uint32_t consumed;
 } gpu_cruncher_ctx;
 
 cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id, cl_device_id device_id, tasks_buffers* tasks_buffs);
@@ -59,4 +60,4 @@ cl_int anakrnl_permut_enqueue(anakrnl_permut *anakrnl);
 cl_int anakrnl_permut_wait(anakrnl_permut *anakrnl);
 cl_int anakrnl_permut_free(anakrnl_permut *anakrnl);
 
-#endif //OPENCL_TEST_OCL_TYPES_H
+#endif //GPU_CRUNCHER_H

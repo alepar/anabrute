@@ -33,6 +33,8 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
     ctx->platform_id = platform_id;
     ctx->device_id = device_id;
     ctx->tasks_buffs = tasks_buffs;
+    ctx->is_running = true;
+    ctx->consumed = 0;
 
     ctx->tasks_in_buffer_count = 0;
     ctx->hashes_num = 0;

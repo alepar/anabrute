@@ -21,12 +21,14 @@
     #include "CL/cl.h"
 #endif
 
+// cpu<->gpu tasks buffers length
+#define TASKS_BUFFERS_SIZE 256
+
 // defines task size for gpu cruncher
-// peak at ~256-512K
+// peak at ~256-512K, try lowering if kernel times out
 #define PERMUT_TASKS_IN_BATCH 256*1024
-// peak at ~512
+// peak at ~512, try lowering if kernel times out
 #define MAX_ITERS_PER_TASK 512
-// 512*512*1024 == 256M (11! < 256M < 12!)
 
 // has to be in sync with constants in permut.cl
 #define MAX_STR_LENGTH 40
