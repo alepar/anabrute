@@ -11,7 +11,7 @@
     #include <sys/time.h>
 #endif
 
-#include "ocl_layer.h"
+#include "gpu_cruncher.h"
 #include "hashes.h"
 
 static const char* size_suffixes[] = {"", "K", "M", "G", "T", "P"};
@@ -25,7 +25,7 @@ void format_bignum(uint64_t size, char *dst, uint16_t div) {
 }
 
 void* run_kernel(void *ptr) {
-    anactx *anactx = ptr;
+    gpu_cruncher_ctx *anactx = ptr;
 
     FILE *file = fopen("submit.dump.crash1", "r");
 /*
@@ -76,11 +76,11 @@ void* run_kernel(void *ptr) {
 
     cl_int errcode;
     for (int i=0; i<num_tasks; i++) {
-        anactx_submit_permut_task(anactx, tasks+i);
+        gpu_cruncher_ctx_submit_permut_task(anactx, tasks + i);
     }
-    errcode = anactx_flush_tasks_buffer(anactx);
+    errcode = gpu_cruncher_ctx_flush_tasks_buffer(anactx);
     ret_iferr(errcode, "failed to flush tasks buffer");
-    errcode = anactx_wait_for_cur_kernel(anactx);
+    errcode = gpu_cruncher_ctx_wait_for_cur_kernel(anactx);
     ret_iferr(errcode, "failed to wait for last kernel");
 
     gettimeofday(&t1, 0);
@@ -184,15 +184,15 @@ int main(int argc, char *argv[]) {
     ret_iferr(!hashes, "failed to allocate hashes");
 
     cl_int errcode;
-    anactx anactxs[num_devices];
+    gpu_cruncher_ctx anactxs[num_devices];
     for (uint32_t i=0; i<num_devices; i++) {
-        errcode = anactx_create(&anactxs[i], platform_id, device_ids[i]);
-        ret_iferr(errcode, "failed to create anactx");
+        errcode = gpu_cruncher_ctx_create(&anactxs[i], platform_id, device_ids[i]);
+        ret_iferr(errcode, "failed to create gpu_cruncher_ctx");
 
         anactxs[i].num_threads = num_devices;
         anactxs[i].thread_id = i;
 
-        errcode = anactx_set_input_hashes(&anactxs[i], hashes, hashes_num);
+        errcode = gpu_cruncher_ctx_set_input_hashes(&anactxs[i], hashes, hashes_num);
         ret_iferr(errcode, "failed to set input hashes");
     }
 
@@ -201,7 +201,7 @@ int main(int argc, char *argv[]) {
         run_kernel(&anactxs[0]);
     }
 
-    const uint32_t *hashes_reversed = anactx_read_hashes_reversed(&anactxs[0], &errcode);
+    const uint32_t *hashes_reversed = gpu_cruncher_ctx_read_hashes_reversed(&anactxs[0], &errcode);
     ret_iferr(errcode, "failed to read hashes_reversed");
 
     for(int i=0; i<hashes_num; i++) {
@@ -211,7 +211,7 @@ int main(int argc, char *argv[]) {
     }
 
     for (int i=0; i<num_devices; i++) {
-        anactx_free(&anactxs[i]);
+        gpu_cruncher_ctx_free(&anactxs[i]);
     }
 
     return 0;

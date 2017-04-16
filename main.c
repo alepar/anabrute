@@ -15,17 +15,15 @@
     #include <sys/time.h>
 #endif
 
-#include "anatypes.h"
+#include "permut_types.h"
+
+#include "cpu_cruncher.h"
 #include "fact.h"
+#include "gpu_cruncher.h"
 #include "hashes.h"
-#include "ocl_layer.h"
+#include "os.h"
 
-stack_item stack[20];
-string_and_count scs[120];
-char_counts_strings* dict_by_char[CHARCOUNT][MAX_DICT_SIZE];
-int dict_by_char_len[CHARCOUNT] = {0};
-
-int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs) {
+int submit_tasks(cpu_cruncher_ctx* ctx, int8_t permut[], int permut_len, char *all_strs) {
     int permutable_count = 0;
     for (int i=0; i<permut_len; i++) {
         if (permut[i] > 0) {
@@ -37,17 +35,21 @@ int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs
         return 0;
     }
 
-    for (int j=0; j<permut_len; j++) {
-        char offset = permut[j];
-        if (offset < 0) {
-            offset = -offset;
-        } else {
-            printf("*");
+/*
+    if (ctx->cpu_cruncher_id == 0) {
+        for (int j=0; j<permut_len; j++) {
+            char offset = permut[j];
+            if (offset < 0) {
+                offset = -offset;
+            } else {
+                printf("*");
+            }
+            offset--;
+            printf("%s ", all_strs+offset);
         }
-        offset--;
-        printf("%s ", all_strs+offset);
+        printf("\n");
     }
-    printf("\n");
+*/
 
 /*
     permut_task task;
@@ -61,7 +63,7 @@ int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs
     uint64_t permut_iters = fact(permutable_count);
     for (uint64_t batchi=0; batchi < (permut_iters/MAX_ITERS_PER_TASK+1); batchi++) {
         task.start_from = batchi*MAX_ITERS_PER_TASK+1;
-        errcode = anactx_submit_permut_task(anactx, &task);
+        errcode = gpu_cruncher_ctx_submit_permut_task(gpu_cruncher_ctx, &task);
         ret_iferr(errcode, "failed to submit task");
     }
 */
@@ -69,7 +71,7 @@ int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs
     return 0;
 }
 
-int recurse_combs(anactx* anactx, char *all_strs, string_idx_and_count sics[], int sics_len, int sics_idx, int8_t permut[], int permut_len, int start_idx) {
+int recurse_combs(cpu_cruncher_ctx* ctx, char *all_strs, string_idx_and_count sics[], int sics_len, int sics_idx, int8_t permut[], int permut_len, int start_idx) {
     int errcode=0;
 
     if (sics_idx >= sics_len) {
@@ -81,7 +83,7 @@ int recurse_combs(anactx* anactx, char *all_strs, string_idx_and_count sics[], i
             }
         }
 
-        if(errcode = submit_tasks(anactx, permut, permut_len, all_strs)) {
+        if(errcode = submit_tasks(ctx, permut, permut_len, all_strs)) {
             return errcode;
         }
 
@@ -99,9 +101,9 @@ int recurse_combs(anactx* anactx, char *all_strs, string_idx_and_count sics[], i
                 sics[sics_idx].count--;
 
                 if (sics[sics_idx].count == 0) {
-                    errcode = recurse_combs(anactx, all_strs, sics, sics_len, sics_idx+1, permut, permut_len, 0);
+                    errcode = recurse_combs(ctx, all_strs, sics, sics_len, sics_idx+1, permut, permut_len, 0);
                 } else if (sics[sics_idx].count <= permut_len-i-1) {
-                    errcode = recurse_combs(anactx, all_strs, sics, sics_len, sics_idx, permut, permut_len, i+1);
+                    errcode = recurse_combs(ctx, all_strs, sics, sics_len, sics_idx, permut, permut_len, i+1);
                 }
 
                 if (errcode) return errcode;
@@ -111,13 +113,13 @@ int recurse_combs(anactx* anactx, char *all_strs, string_idx_and_count sics[], i
             }
         }
     } else {
-        return recurse_combs(anactx, all_strs, sics, sics_len, sics_idx+1, permut, permut_len, 0);
+        return recurse_combs(ctx, all_strs, sics, sics_len, sics_idx+1, permut, permut_len, 0);
     }
 
     return errcode;
 }
 
-int recurse_string_combs(anactx* anactx, stack_item *stack, int stack_len, int stack_idx, int string_idx, string_and_count *scs, int scs_idx) {
+int recurse_string_combs(cpu_cruncher_ctx* ctx, stack_item *stack, int stack_len, int stack_idx, int string_idx, string_and_count *scs, int scs_idx) {
     int errcode=0;
     if (stack_idx >= stack_len) {
         string_idx_and_count sics[scs_idx];
@@ -147,7 +149,7 @@ int recurse_string_combs(anactx* anactx, stack_item *stack, int stack_len, int s
 
         int8_t permut[word_count];
         memset(permut, 0, word_count);
-        return recurse_combs(anactx, all_strs, sics, sics_len, 0, permut, word_count, 0);
+        return recurse_combs(ctx, all_strs, sics, sics_len, 0, permut, word_count, 0);
     } else if (stack[stack_idx].ccs->strings_len > string_idx+1) {
         const uint8_t orig_count = stack[stack_idx].count;
         for (uint8_t i=0; i <= orig_count; i++) {
@@ -155,29 +157,29 @@ int recurse_string_combs(anactx* anactx, stack_item *stack, int stack_len, int s
 
             scs[scs_idx].str = stack[stack_idx].ccs->strings[string_idx];
             scs[scs_idx].count = i;
-            errcode=recurse_string_combs(anactx, stack, stack_len, stack_idx, string_idx + 1, scs, scs_idx + 1);
+            errcode=recurse_string_combs(ctx, stack, stack_len, stack_idx, string_idx + 1, scs, scs_idx + 1);
             if (errcode) return errcode;
         }
         stack[stack_idx].count = orig_count;
     } else {
         scs[scs_idx].str = stack[stack_idx].ccs->strings[string_idx];
         scs[scs_idx].count = stack[stack_idx].count;
-        return recurse_string_combs(anactx, stack, stack_len, stack_idx + 1, 0, scs, scs_idx + 1);
+        return recurse_string_combs(ctx, stack, stack_len, stack_idx + 1, 0, scs, scs_idx + 1);
     }
 
     return errcode;
 }
 
-int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int curdictidx, int stack_len) {
+int recurse_dict_words(cpu_cruncher_ctx* ctx, char_counts *remainder, int curchar, int curdictidx, stack_item *stack, int stack_len, string_and_count *scs) {
 /*
     // TODO debug
     if (stack_len == 1) {
         if (strcmp(stack[0].ccs->strings[0], "outstations")) {
             if (debug_flag) {
                 printf("flushing\n");
-                anactx_flush_tasks_buffer(anactx);
+                gpu_cruncher_ctx_flush_tasks_buffer(gpu_cruncher_ctx);
                 printf("waiting\n");
-                anactx_wait_for_cur_kernel(anactx);
+                gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx);
             }
             debug_flag=0;
         } else {
@@ -209,7 +211,7 @@ int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int 
     }
 
     if (remainder->length == 0) {
-        return recurse_string_combs(anactx, stack, stack_len, 0, 0, scs, 0);
+        return recurse_string_combs(ctx, stack, stack_len, 0, 0, scs, 0);
     }
 
     for (;curchar<CHARCOUNT & !remainder->counts[curchar]; curchar++)
@@ -218,24 +220,21 @@ int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int 
     }
 
     int step = 1;
-    // TODO parallelization
-/*
     if (stack_len == 0) {
-        step = anactx->num_threads;
+        step = ctx->num_cpu_crunchers;
     }
-*/
 
     int errcode=0;
-    for (int i=curdictidx; i<dict_by_char_len[curchar]; i+=step) {
+    for (int i=curdictidx; i<ctx->dict_by_char_len[curchar]; i+=step) {
         if (stack_len == 0) {
-            printf("L0 %d/%d: %s\n", i, dict_by_char_len[curchar], dict_by_char[curchar][i]->strings[0]);
+            ctx->progress_l0_index = i;
         }
 
-        stack[stack_len].ccs = dict_by_char[curchar][i];
+        stack[stack_len].ccs = (*ctx->dict_by_char)[curchar][i];
 
         char_counts next_remainder;
         char_counts_copy(remainder, &next_remainder);
-        for (uint8_t ccs_count=1; char_counts_subtract(&next_remainder, &dict_by_char[curchar][i]->counts); ccs_count++) {
+        for (uint8_t ccs_count=1; char_counts_subtract(&next_remainder, &(*ctx->dict_by_char)[curchar][i]->counts); ccs_count++) {
             stack[stack_len].count = ccs_count;
 
             int next_char = curchar;
@@ -246,9 +245,13 @@ int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int 
                 next_idx = 0;
             }
 
-            errcode = recurse_dict_words(anactx, &next_remainder, next_char, next_idx, stack_len + 1);
+            errcode = recurse_dict_words(ctx, &next_remainder, next_char, next_idx, stack, stack_len + 1, scs);
             if (errcode) return errcode;
         }
+    }
+
+    if (stack_len == 0) {
+        ctx->progress_l0_index = ctx->dict_by_char_len[0];
     }
 
     return errcode;
@@ -356,20 +359,27 @@ const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
     return hashes_num;
 }
 
-void* run_brute_thread(void *ptr) {
-    anactx *anactx = ptr;
+void* run_cpu_cruncher_thread(void *ptr) {
+    cpu_cruncher_ctx *ctx = ptr;
 
-    char_counts local_remainer;
-    char_counts_copy(anactx->seed_phrase, &local_remainer);
-    int errcode = recurse_dict_words(anactx, &local_remainer, 0, anactx->thread_id, 0);
+    char_counts local_remainder;
+    char_counts_copy(ctx->seed_phrase, &local_remainder);
 
-    if (errcode) fprintf(stderr, "[Thread %d] errcode %d\n", anactx->thread_id, errcode);
+    stack_item stack[20];
+    string_and_count scs[120];
+
+    int errcode = recurse_dict_words(ctx, &local_remainder, 0, ctx->cpu_cruncher_id, stack, 0, scs);
+
+    if (errcode) fprintf(stderr, "[Thread %d] errcode %d\n", ctx->cpu_cruncher_id, errcode);
     return NULL;
 }
 
 int main(int argc, char *argv[]) {
 
-    // ----------- read dict
+    // === read dict
+
+    char_counts_strings* dict_by_char[CHARCOUNT][MAX_DICT_SIZE];
+    int dict_by_char_len[CHARCOUNT] = {0};
 
     char_counts seed_phrase;
     char_counts_create(seed_phrase_str, &seed_phrase);
@@ -387,11 +397,9 @@ int main(int argc, char *argv[]) {
             }
         }
     }
+    // maybe resort dict_by_char? by length or char occurs?
 
-    // todo resort dict_by_char?
-    //   by length or char occurs?
-
-    // ----------- setup opencl
+    // === setup opencl / gpu cruncher contexts
 
     cl_platform_id platform_id;
     cl_uint num_platforms;
@@ -446,39 +454,54 @@ int main(int argc, char *argv[]) {
     ret_iferr(!hashes, "failed to allocate hashes");
 
     cl_int errcode;
-    anactx anactxs[num_devices];
+    gpu_cruncher_ctx gpu_cruncher_ctxs[num_devices];
     for (uint32_t i=0; i<num_devices; i++) {
-        errcode = anactx_create(&anactxs[i], platform_id, device_ids[i]);
-        ret_iferr(errcode, "failed to create anactx");
-
-        anactxs[i].num_threads = num_devices;
-        anactxs[i].thread_id = i;
-        anactxs[i].seed_phrase = &seed_phrase;
-
-        errcode = anactx_set_input_hashes(&anactxs[i], hashes, hashes_num);
+        errcode = gpu_cruncher_ctx_create(&gpu_cruncher_ctxs[i], platform_id, device_ids[i]);
+        ret_iferr(errcode, "failed to create gpu_cruncher_ctx");
+        errcode = gpu_cruncher_ctx_set_input_hashes(&gpu_cruncher_ctxs[i], hashes, hashes_num);
         ret_iferr(errcode, "failed to set input hashes");
     }
 
-    // ----------- run
+    // === create cpu cruncher contexts
 
-    run_brute_thread(&anactxs[0]);
-//    run_brute_thread(&anactxs[1]);
+    task_buffers* task_buffers;
 
-//    printf("starting %d threads\n", num_devices);
-//    pthread_t threads[num_devices];
-//    for (uint32_t i=0; i<num_devices; i++) {
-//        int err = pthread_create(&threads[i], NULL, run_brute_thread, &anactxs[i]);
-//        ret_iferr(err, "failed to create thread");
-//    }
+    uint32_t num_cpu_crunchers = num_cpu_cores();
+    cpu_cruncher_ctx cpu_cruncher_ctxs[num_cpu_crunchers];
+    for (uint32_t id=0; id<num_cpu_crunchers; id++) {
+        cpu_cruncher_ctx_create(cpu_cruncher_ctxs+id, id, num_cpu_crunchers, &seed_phrase, &dict_by_char, dict_by_char_len, task_buffers);
+    }
 
-    // TODO print out stats
-    // TODO join with threads
+    // === create and start cruncher threads
 
-//    for (uint32_t i=0; i<num_devices; i++) {
-//        int err = pthread_join(threads[i], NULL);
-//        ret_iferr(err, "failed to join thread");
-//    }
+    printf("starting %d cruncher threads\n", num_cpu_crunchers);
+    pthread_t cpu_threads[num_cpu_crunchers];
+    for (int i=0; i<num_cpu_crunchers; i++) {
+        int err = pthread_create(cpu_threads+i, NULL, run_cpu_cruncher_thread, cpu_cruncher_ctxs+i);
+        ret_iferr(err, "failed to create cpu thread");
+    }
 
-    // TODO free anactx
+    // === monitor and display progress
+
+    while (1) {
+        sleep(1);
+        int min=dict_by_char_len[0], max=0;
+        for (int i=0; i<num_cpu_crunchers; i++) {
+            const int progress = cpu_cruncher_ctxs[i].progress_l0_index;
+            if (progress > max) max = progress;
+            if (progress < min) min = progress;
+        }
+        printf("%d-%d/%d\n", min, max, dict_by_char_len[0]);
+
+        // TODO http://stackoverflow.com/questions/2156353/how-do-you-query-a-pthread-to-see-if-it-is-still-running
+        if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) break;
+    }
+
+    for (uint32_t i=0; i<1; i++) {
+        int err = pthread_join(cpu_threads[i], NULL);
+        ret_iferr(err, "failed to join thread");
+    }
+
+    // TODO free gpu_cruncher_ctx
     printf("done\n");
 }

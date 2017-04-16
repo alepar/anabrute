@@ -1,7 +1,7 @@
 #include <memory.h>
 #include <stdlib.h>
 
-#include "anatypes.h"
+#include "permut_types.h"
 
 bool char_counts_create(const char *s, char_counts *cc) {
     memset(cc->counts, 0, CHARCOUNT);

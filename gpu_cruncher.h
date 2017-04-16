@@ -9,17 +9,8 @@
     #include "CL/cl.h"
 #endif
 
-#include "anatypes.h"
-
-
-// peak at ~256-512K
-#define PERMUT_TASKS_IN_BATCH 256*1024
-// peak at ~512
-#define MAX_ITERS_PER_TASK 512
-// 512*512*1024 == 256M (11! < 256M < 12!)
-
-#define MAX_STR_LENGTH 40
-#define MAX_OFFSETS_LENGTH 20
+#include "constants.h"
+#include "permut_types.h"
 
 typedef struct permut_task_s {
     char all_strs[MAX_STR_LENGTH];
@@ -28,13 +19,8 @@ typedef struct permut_task_s {
 } permut_task;
 
 struct anakrnl_permut_s;
-typedef struct anactx_s {
-    // parallelization over devices
-    uint32_t num_threads;
-    uint32_t thread_id;
-
+typedef struct gpu_cruncher_ctx_s {
     // job definition
-    char_counts *seed_phrase;
     uint32_t *hashes;
     uint32_t hashes_num;
     cl_mem mem_hashes;
@@ -56,23 +42,20 @@ typedef struct anactx_s {
     cl_mem mem_hashes_reversed;
     uint32_t hashes_seen;
 
-    // TODO stats
-} anactx;
+    // progress
+    // TODO
+} gpu_cruncher_ctx;
 
-cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id device_id);
-cl_int anactx_set_input_hashes(anactx *anactx, uint32_t *hashes, uint32_t hashes_num);
-const uint32_t* anactx_read_hashes_reversed(anactx *anactx, cl_int *errcode);
-cl_int anactx_free(anactx *anactx);
-cl_int anactx_submit_permut_task(anactx *anactx, permut_task *task);
-cl_int anactx_flush_tasks_buffer(anactx *anactx);
-cl_int anactx_wait_for_cur_kernel(anactx *anactx);
-
-// TODO add to queue
-// TODO make queue available
-// TODO process events routine
+cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *anactx, cl_platform_id platform_id, cl_device_id device_id);
+cl_int gpu_cruncher_ctx_set_input_hashes(gpu_cruncher_ctx *anactx, uint32_t *hashes, uint32_t hashes_num);
+const uint32_t* gpu_cruncher_ctx_read_hashes_reversed(gpu_cruncher_ctx *anactx, cl_int *errcode);
+cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *anactx);
+cl_int gpu_cruncher_ctx_submit_permut_task(gpu_cruncher_ctx *anactx, permut_task *task);
+cl_int gpu_cruncher_ctx_flush_tasks_buffer(gpu_cruncher_ctx *anactx);
+cl_int gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx *anactx);
 
 typedef struct anakrnl_permut_s {
-    anactx *ctx;
+    gpu_cruncher_ctx *ctx;
 
     cl_kernel kernel;
     cl_event event;
@@ -83,7 +66,7 @@ typedef struct anakrnl_permut_s {
     uint32_t num_tasks;
 } anakrnl_permut;
 
-cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t iters_per_item, permut_task *tasks, uint32_t num_tasks);
+cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, gpu_cruncher_ctx *anactx, uint32_t iters_per_item, permut_task *tasks, uint32_t num_tasks);
 cl_int anakrnl_permut_enqueue(anakrnl_permut *anakrnl);
 cl_int anakrnl_permut_wait(anakrnl_permut *anakrnl);
 cl_int anakrnl_permut_free(anakrnl_permut *anakrnl);

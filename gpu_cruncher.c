@@ -1,7 +1,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "ocl_layer.h"
+#include "gpu_cruncher.h"
 #include "hashes.h"
 
 // private stuff
@@ -29,7 +29,7 @@ char* read_file(const char* filename) {
 
 // public stuff
 
-cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id device_id) {
+cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *anactx, cl_platform_id platform_id, cl_device_id device_id) {
     anactx->platform_id = platform_id;
     anactx->device_id = device_id;
 
@@ -71,7 +71,7 @@ cl_int anactx_create(anactx *anactx, cl_platform_id platform_id, cl_device_id de
     return CL_SUCCESS;
 }
 
-cl_int anactx_set_input_hashes(anactx *anactx, uint32_t *hashes, uint32_t hashes_num) {
+cl_int gpu_cruncher_ctx_set_input_hashes(gpu_cruncher_ctx *anactx, uint32_t *hashes, uint32_t hashes_num) {
     anactx->hashes = hashes;
     anactx->hashes_num = hashes_num;
 
@@ -87,7 +87,7 @@ cl_int anactx_set_input_hashes(anactx *anactx, uint32_t *hashes, uint32_t hashes
     return CL_SUCCESS;
 }
 
-const uint32_t* anactx_read_hashes_reversed(anactx *anactx, cl_int *errcode) {
+const uint32_t* gpu_cruncher_ctx_read_hashes_reversed(gpu_cruncher_ctx *anactx, cl_int *errcode) {
     *errcode = clEnqueueReadBuffer (anactx->queue, anactx->mem_hashes_reversed, CL_TRUE, 0, anactx->hashes_num * MAX_STR_LENGTH, anactx->hashes_reversed, 0, NULL, NULL);
     if (*errcode) {
         return NULL;
@@ -95,7 +95,7 @@ const uint32_t* anactx_read_hashes_reversed(anactx *anactx, cl_int *errcode) {
     return anactx->hashes_reversed;
 }
 
-cl_int anactx_free(anactx *anactx) {
+cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *anactx) {
     if (anactx->hashes_reversed) {
         free(anactx->hashes_reversed);
     }
@@ -112,10 +112,10 @@ cl_int anactx_free(anactx *anactx) {
     return errcode;
 }
 
-cl_int anactx_submit_permut_task(anactx *anactx, permut_task *task) {
+cl_int gpu_cruncher_ctx_submit_permut_task(gpu_cruncher_ctx *anactx, permut_task *task) {
     if (anactx->tasks_in_buffer_count >= PERMUT_TASKS_IN_BATCH) {
         cl_int errcode;
-        errcode = anactx_flush_tasks_buffer(anactx);
+        errcode = gpu_cruncher_ctx_flush_tasks_buffer(anactx);
         ret_iferr(errcode, "failed to flush tasks buffer");
     }
 
@@ -123,11 +123,11 @@ cl_int anactx_submit_permut_task(anactx *anactx, permut_task *task) {
     return CL_SUCCESS;
 }
 
-cl_int anactx_flush_tasks_buffer(anactx *anactx) {
+cl_int gpu_cruncher_ctx_flush_tasks_buffer(gpu_cruncher_ctx *anactx) {
 /*
     FILE *file = fopen("buffer.log", "w");
-    for (int i=0; i<anactx->tasks_in_buffer_count; i++) {
-        permut_task *task = &anactx->tasks_buffer[i];
+    for (int i=0; i<gpu_cruncher_ctx->tasks_in_buffer_count; i++) {
+        permut_task *task = &gpu_cruncher_ctx->tasks_buffer[i];
         
         fprintf(file, "task %d, start from %d\n", i, task->start_from);
 
@@ -152,7 +152,7 @@ cl_int anactx_flush_tasks_buffer(anactx *anactx) {
 */
 
     cl_int errcode;
-    errcode = anactx_wait_for_cur_kernel(anactx);
+    errcode = gpu_cruncher_ctx_wait_for_cur_kernel(anactx);
     ret_iferr(errcode, "failed to wait for current kernel");
 
     anakrnl_permut *krnl = malloc(sizeof(anakrnl_permut));
@@ -171,7 +171,7 @@ cl_int anactx_flush_tasks_buffer(anactx *anactx) {
     return CL_SUCCESS;
 }
 
-cl_int anactx_wait_for_cur_kernel(anactx *anactx) {
+cl_int gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx *anactx) {
     anakrnl_permut *krnl = anactx->cur_exec_kernel;
     if (krnl == NULL) {
         return CL_SUCCESS;
@@ -181,7 +181,7 @@ cl_int anactx_wait_for_cur_kernel(anactx *anactx) {
     errcode = anakrnl_permut_wait(krnl);
     ret_iferr(errcode, "failed to wait for current kernel");
 
-    const uint32_t *hashes_reversed = anactx_read_hashes_reversed(anactx, &errcode);
+    const uint32_t *hashes_reversed = gpu_cruncher_ctx_read_hashes_reversed(anactx, &errcode);
     char hash_ascii[33];
     uint32_t hashes_found = 0;
     for(int i=0; i<anactx->hashes_num; i++) {
@@ -212,7 +212,7 @@ cl_int anactx_wait_for_cur_kernel(anactx *anactx) {
     return CL_SUCCESS;
 }
 
-cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, anactx *anactx, uint32_t iters_per_item, permut_task *tasks, uint32_t num_tasks) {
+cl_int anakrnl_permut_create(anakrnl_permut *anakrnl, gpu_cruncher_ctx *anactx, uint32_t iters_per_item, permut_task *tasks, uint32_t num_tasks) {
     cl_int errcode;
 
     anakrnl->ctx = anactx;

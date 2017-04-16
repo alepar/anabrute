@@ -1,5 +1,5 @@
-#ifndef __ANATYPES_H__
-#define __ANATYPES_H__
+#ifndef __PERMUT_TYPES_H__
+#define __PERMUT_TYPES_H__
 
 #include <stdbool.h>
 #include <stdint.h>
