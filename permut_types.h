@@ -1,13 +1,7 @@
 #ifndef __PERMUT_TYPES_H__
 #define __PERMUT_TYPES_H__
 
-#include <stdbool.h>
-#include <stdint.h>
-
-#ifdef __APPLE__
-#include <unitypes.h>
-#endif
-
+#include "common.h"
 #include "seedphrase.h"
 
 #define MAX_STRINGS_SIZE 1024

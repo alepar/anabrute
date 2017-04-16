@@ -2,7 +2,7 @@
 
 void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_id, uint32_t num_cpu_crunchers,
                              char_counts* seed_phrase, char_counts_strings* (*dict_by_char)[CHARCOUNT][MAX_DICT_SIZE], int* dict_by_char_len,
-                             task_buffers* task_buffs)
+                             tasks_buffers* tasks_buffs)
 {
     cruncher->num_cpu_crunchers = num_cpu_crunchers;
     cruncher->cpu_cruncher_id = cpu_cruncher_id;
@@ -13,5 +13,5 @@ void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_i
 
     cruncher->progress_l0_index = 0;
     cruncher->local_buffer = NULL;
-    cruncher->task_buffs = task_buffs;
+    cruncher->tasks_buffs = tasks_buffs;
 }

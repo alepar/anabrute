@@ -1,11 +1,7 @@
 #ifndef ANABRUTE_HASHES_H
 #define ANABRUTE_HASHES_H
 
-#include <stdint.h>
-
-#ifdef __APPLE__
-    #include <unitypes.h>
-#endif
+#include "common.h"
 
 void hash_to_ascii(const uint32_t *hash, char *buf);
 

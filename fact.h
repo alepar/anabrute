@@ -1,7 +1,7 @@
 #ifndef ANABRUTE_FACT_H
 #define ANABRUTE_FACT_H
 
-#include <stdint.h>
+#include "common.h"
 
 uint64_t fact(int x);
 

@@ -1,27 +1,10 @@
-#include <errno.h>
-#include <pthread.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
-
-#ifdef __APPLE__
-    #include <unitypes.h>
-    #include <event.h>
-#else
-    #include <sys/time.h>
-#endif
-
-#include "permut_types.h"
-
+#include "common.h"
 #include "cpu_cruncher.h"
 #include "fact.h"
 #include "gpu_cruncher.h"
 #include "hashes.h"
 #include "os.h"
+#include "permut_types.h"
 
 int submit_tasks(cpu_cruncher_ctx* ctx, int8_t permut[], int permut_len, char *all_strs) {
     int permutable_count = 0;
@@ -51,22 +34,21 @@ int submit_tasks(cpu_cruncher_ctx* ctx, int8_t permut[], int permut_len, char *a
     }
 */
 
-/*
-    permut_task task;
-    cl_int errcode;
-
-    // TODO superfluos memory copy
     permut[permut_len] = 0;
-    memcpy(&task.all_strs, all_strs, MAX_STR_LENGTH);
-    memcpy(&task.offsets, permut, MAX_OFFSETS_LENGTH);
 
-    uint64_t permut_iters = fact(permutable_count);
-    for (uint64_t batchi=0; batchi < (permut_iters/MAX_ITERS_PER_TASK+1); batchi++) {
-        task.start_from = batchi*MAX_ITERS_PER_TASK+1;
-        errcode = gpu_cruncher_ctx_submit_permut_task(gpu_cruncher_ctx, &task);
-        ret_iferr(errcode, "failed to submit task");
+    int errcode = 0;
+    if (ctx->local_buffer != NULL && tasks_buffer_isfull(ctx->local_buffer)) {
+        errcode = tasks_buffers_add_buffer(ctx->tasks_buffs, ctx->local_buffer);
+        ret_iferr(errcode, "cpu cruncher failed to pass buffer to gpu crunchers");
+        ctx->local_buffer = NULL;
     }
-*/
+
+    if (ctx->local_buffer == NULL) {
+        ctx->local_buffer = tasks_buffer_allocate();
+        ret_iferr(!ctx->local_buffer, "cpu cruncher failed to allocate local buffer");
+    }
+
+    tasks_buffer_add_task(ctx->local_buffer, all_strs, permut);
 
     return 0;
 }
@@ -370,8 +352,28 @@ void* run_cpu_cruncher_thread(void *ptr) {
 
     int errcode = recurse_dict_words(ctx, &local_remainder, 0, ctx->cpu_cruncher_id, stack, 0, scs);
 
-    if (errcode) fprintf(stderr, "[Thread %d] errcode %d\n", ctx->cpu_cruncher_id, errcode);
+    if (ctx->local_buffer != NULL && ctx->local_buffer->num_tasks > 0) {
+        errcode = tasks_buffers_add_buffer(ctx->tasks_buffs, ctx->local_buffer);
+        ret_iferr(errcode, "cpu cruncher failed to pass last buffer to gpu crunchers");
+        ctx->local_buffer = NULL;
+    }
+
+    if (errcode) fprintf(stderr, "[cpucruncher %d] errcode %d\n", ctx->cpu_cruncher_id, errcode);
     return NULL;
+}
+
+void* run_gpu_cruncher_thread(void *ptr) {
+    gpu_cruncher_ctx *ctx = ptr;
+
+    // TODO stop once cpu threads are done
+    while(1) {
+        tasks_buffer *buf;
+        tasks_buffers_get_buffer(ctx->tasks_buffs, &buf);
+        printf("got buffer\n");
+        tasks_buffer_free(buf);
+        sleep(1);
+    }
+
 }
 
 int main(int argc, char *argv[]) {
@@ -399,6 +401,11 @@ int main(int argc, char *argv[]) {
     }
     // maybe resort dict_by_char? by length or char occurs?
 
+    // setup shared cpu/gpu cruncher studf
+
+    tasks_buffers tasks_buffs;
+    tasks_buffers_create(&tasks_buffs);
+
     // === setup opencl / gpu cruncher contexts
 
     cl_platform_id platform_id;
@@ -406,14 +413,14 @@ int main(int argc, char *argv[]) {
     clGetPlatformIDs (1, &platform_id, &num_platforms);
     ret_iferr(!num_platforms, "no platforms");
 
-    cl_uint num_devices;
-    clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, 0, NULL, &num_devices);
-    cl_device_id device_ids[num_devices];
-    clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, num_devices, device_ids, &num_devices);
-    ret_iferr(!num_devices, "no devices");
+    cl_uint num_gpu_crunchers;
+    clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, 0, NULL, &num_gpu_crunchers);
+    cl_device_id device_ids[num_gpu_crunchers];
+    clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, num_gpu_crunchers, device_ids, &num_gpu_crunchers);
+    ret_iferr(!num_gpu_crunchers, "no devices");
 
     uint32_t num_gpus = 0;
-    for (int i=0; i<num_devices; i++) {
+    for (int i=0; i<num_gpu_crunchers; i++) {
         cl_device_type dev_type;
         clGetDeviceInfo (device_ids[i], CL_DEVICE_TYPE, sizeof(dev_type), &dev_type, NULL);
         if (dev_type > CL_DEVICE_TYPE_CPU) {
@@ -423,18 +430,18 @@ int main(int argc, char *argv[]) {
 
     if (num_gpus) {
         int d=0;
-        for (int s=0; s<num_devices; s++) {
+        for (int s=0; s<num_gpu_crunchers; s++) {
             cl_device_type dev_type;
             clGetDeviceInfo (device_ids[s], CL_DEVICE_TYPE, sizeof(dev_type), &dev_type, NULL);
             if (dev_type > CL_DEVICE_TYPE_CPU) {
                 device_ids[d++] = device_ids[s];
             }
         }
-        num_devices = num_gpus;
+        num_gpu_crunchers = num_gpus;
     }
 
     char char_buf[1024];
-    for (int i=0; i<num_devices; i++) {
+    for (int i=0; i<num_gpu_crunchers; i++) {
         cl_ulong local_mem; char local_mem_str[32];
         cl_ulong global_mem; char global_mem_str[32];
 
@@ -454,9 +461,9 @@ int main(int argc, char *argv[]) {
     ret_iferr(!hashes, "failed to allocate hashes");
 
     cl_int errcode;
-    gpu_cruncher_ctx gpu_cruncher_ctxs[num_devices];
-    for (uint32_t i=0; i<num_devices; i++) {
-        errcode = gpu_cruncher_ctx_create(&gpu_cruncher_ctxs[i], platform_id, device_ids[i]);
+    gpu_cruncher_ctx gpu_cruncher_ctxs[num_gpu_crunchers];
+    for (uint32_t i=0; i<num_gpu_crunchers; i++) {
+        errcode = gpu_cruncher_ctx_create(&gpu_cruncher_ctxs[i], platform_id, device_ids[i], &tasks_buffs);
         ret_iferr(errcode, "failed to create gpu_cruncher_ctx");
         errcode = gpu_cruncher_ctx_set_input_hashes(&gpu_cruncher_ctxs[i], hashes, hashes_num);
         ret_iferr(errcode, "failed to set input hashes");
@@ -464,34 +471,38 @@ int main(int argc, char *argv[]) {
 
     // === create cpu cruncher contexts
 
-    task_buffers* task_buffers;
-
     uint32_t num_cpu_crunchers = num_cpu_cores();
     cpu_cruncher_ctx cpu_cruncher_ctxs[num_cpu_crunchers];
     for (uint32_t id=0; id<num_cpu_crunchers; id++) {
-        cpu_cruncher_ctx_create(cpu_cruncher_ctxs+id, id, num_cpu_crunchers, &seed_phrase, &dict_by_char, dict_by_char_len, task_buffers);
+        cpu_cruncher_ctx_create(cpu_cruncher_ctxs+id, id, num_cpu_crunchers, &seed_phrase, &dict_by_char, dict_by_char_len, &tasks_buffs);
     }
 
     // === create and start cruncher threads
 
-    printf("starting %d cruncher threads\n", num_cpu_crunchers);
     pthread_t cpu_threads[num_cpu_crunchers];
     for (int i=0; i<num_cpu_crunchers; i++) {
         int err = pthread_create(cpu_threads+i, NULL, run_cpu_cruncher_thread, cpu_cruncher_ctxs+i);
         ret_iferr(err, "failed to create cpu thread");
     }
 
+    pthread_t gpu_threads[num_gpu_crunchers];
+    for (int i=0; i<num_gpu_crunchers; i++) {
+        int err = pthread_create(cpu_threads+i, NULL, run_gpu_cruncher_thread, gpu_cruncher_ctxs+i);
+        ret_iferr(err, "failed to create gpu thread");
+    }
+
     // === monitor and display progress
 
     while (1) {
         sleep(1);
+
         int min=dict_by_char_len[0], max=0;
         for (int i=0; i<num_cpu_crunchers; i++) {
             const int progress = cpu_cruncher_ctxs[i].progress_l0_index;
             if (progress > max) max = progress;
             if (progress < min) min = progress;
         }
-        printf("%d-%d/%d\n", min, max, dict_by_char_len[0]);
+        printf("%d cpus: %d-%d/%d | %d buffs | %d gpus \r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers);
 
         // TODO http://stackoverflow.com/questions/2156353/how-do-you-query-a-pthread-to-see-if-it-is-still-running
         if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) break;

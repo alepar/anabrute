@@ -1,18 +1,7 @@
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-#include <time.h>
-#include <pthread.h>
-
-#ifdef __APPLE__
-    #include <unitypes.h>
-    #include <event.h>
-#else
-    #include <sys/time.h>
-#endif
-
+#include "common.h"
 #include "gpu_cruncher.h"
 #include "hashes.h"
+#include "task_buffers.h"
 
 static const char* size_suffixes[] = {"", "K", "M", "G", "T", "P"};
 void format_bignum(uint64_t size, char *dst, uint16_t div) {

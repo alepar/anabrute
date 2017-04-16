@@ -29,101 +29,102 @@ char* read_file(const char* filename) {
 
 // public stuff
 
-cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *anactx, cl_platform_id platform_id, cl_device_id device_id) {
-    anactx->platform_id = platform_id;
-    anactx->device_id = device_id;
+cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id, cl_device_id device_id, tasks_buffers* tasks_buffs) {
+    ctx->platform_id = platform_id;
+    ctx->device_id = device_id;
+    ctx->tasks_buffs = tasks_buffs;
 
-    anactx->tasks_in_buffer_count = 0;
-    anactx->hashes_num = 0;
-    anactx->hashes_seen = 0;
-    anactx->hashes_reversed = NULL;
-    anactx->cur_exec_kernel = NULL;
-    anactx->tasks_buffer = calloc(PERMUT_TASKS_IN_BATCH, sizeof(permut_task));
+    ctx->tasks_in_buffer_count = 0;
+    ctx->hashes_num = 0;
+    ctx->hashes_seen = 0;
+    ctx->hashes_reversed = NULL;
+    ctx->cur_exec_kernel = NULL;
+//    ctx->tasks_buffer = calloc(PERMUT_TASKS_IN_BATCH, sizeof(permut_task));
 
     cl_int errcode;
     const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
-    anactx->cl_ctx = clCreateContext(ctx_props, 1, &device_id, NULL, NULL, &errcode);
+    ctx->cl_ctx = clCreateContext(ctx_props, 1, &device_id, NULL, NULL, &errcode);
     ret_iferr(errcode, "failed to create context");
 
     char *const kernel_source = read_file("kernels/permut.cl");
     ret_iferr(!kernel_source, "failed to read kernel source");
     size_t lengths[] = {strlen(kernel_source)};
     const char *sources[] = {kernel_source};
-    anactx->program = clCreateProgramWithSource(anactx->cl_ctx, 1, sources, lengths, &errcode);
+    ctx->program = clCreateProgramWithSource(ctx->cl_ctx, 1, sources, lengths, &errcode);
     ret_iferr(errcode, "failed to create program");
-    errcode = clBuildProgram(anactx->program, 0, NULL, NULL, NULL, NULL);
+    errcode = clBuildProgram(ctx->program, 0, NULL, NULL, NULL, NULL);
     if (errcode == CL_BUILD_PROGRAM_FAILURE) {
         // Determine the size of the log
         size_t log_size;
-        clGetProgramBuildInfo(anactx->program, anactx->device_id, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+        clGetProgramBuildInfo(ctx->program, ctx->device_id, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
         // Allocate memory for the log
         char *log = (char *) malloc(log_size);
         // Get the log
-        clGetProgramBuildInfo(anactx->program, anactx->device_id, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+        clGetProgramBuildInfo(ctx->program, ctx->device_id, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
         // Print the log
         fprintf(stderr, "kernel compilation failed, see compiler output below\n------\n%s\n------\n", log);
     }
     ret_iferr(errcode, "failed to build program");
 
-    anactx->queue = clCreateCommandQueue(anactx->cl_ctx, anactx->device_id, NULL, &errcode);
+    ctx->queue = clCreateCommandQueue(ctx->cl_ctx, ctx->device_id, NULL, &errcode);
     ret_iferr(errcode, "failed to create queue");
 
     return CL_SUCCESS;
 }
 
-cl_int gpu_cruncher_ctx_set_input_hashes(gpu_cruncher_ctx *anactx, uint32_t *hashes, uint32_t hashes_num) {
-    anactx->hashes = hashes;
-    anactx->hashes_num = hashes_num;
+cl_int gpu_cruncher_ctx_set_input_hashes(gpu_cruncher_ctx *ctx, uint32_t *hashes, uint32_t hashes_num) {
+    ctx->hashes = hashes;
+    ctx->hashes_num = hashes_num;
 
-    anactx->hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
-    ret_iferr(!anactx->hashes_reversed, "failed to malloc hashes_reversed");
+    ctx->hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
+    ret_iferr(!ctx->hashes_reversed, "failed to malloc hashes_reversed");
 
     cl_int errcode;
-    anactx->mem_hashes = clCreateBuffer(anactx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num*16, hashes, &errcode);
+    ctx->mem_hashes = clCreateBuffer(ctx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num*16, hashes, &errcode);
     ret_iferr(errcode, "failed to create mem_hashes");
-    anactx->mem_hashes_reversed = clCreateBuffer(anactx->cl_ctx, CL_MEM_WRITE_ONLY, hashes_num * MAX_STR_LENGTH, NULL, &errcode);
+    ctx->mem_hashes_reversed = clCreateBuffer(ctx->cl_ctx, CL_MEM_WRITE_ONLY, hashes_num * MAX_STR_LENGTH, NULL, &errcode);
     ret_iferr(errcode, "failed to create mem_hashes_reversed");
 
     return CL_SUCCESS;
 }
 
-const uint32_t* gpu_cruncher_ctx_read_hashes_reversed(gpu_cruncher_ctx *anactx, cl_int *errcode) {
-    *errcode = clEnqueueReadBuffer (anactx->queue, anactx->mem_hashes_reversed, CL_TRUE, 0, anactx->hashes_num * MAX_STR_LENGTH, anactx->hashes_reversed, 0, NULL, NULL);
+const uint32_t* gpu_cruncher_ctx_read_hashes_reversed(gpu_cruncher_ctx *ctx, cl_int *errcode) {
+    *errcode = clEnqueueReadBuffer (ctx->queue, ctx->mem_hashes_reversed, CL_TRUE, 0, ctx->hashes_num * MAX_STR_LENGTH, ctx->hashes_reversed, 0, NULL, NULL);
     if (*errcode) {
         return NULL;
     }
-    return anactx->hashes_reversed;
+    return ctx->hashes_reversed;
 }
 
-cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *anactx) {
-    if (anactx->hashes_reversed) {
-        free(anactx->hashes_reversed);
+cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *ctx) {
+    if (ctx->hashes_reversed) {
+        free(ctx->hashes_reversed);
     }
 
-    free(anactx->tasks_buffer);
+//    free(ctx->tasks_buffer);
 
     cl_int errcode = CL_SUCCESS;
-    errcode |= clReleaseMemObject(anactx->mem_hashes);
-    errcode |= clReleaseMemObject(anactx->mem_hashes_reversed);
-    errcode |= clReleaseCommandQueue (anactx->queue);
-    errcode |= clReleaseProgram(anactx->program);
-    errcode |= clReleaseContext(anactx->cl_ctx);
+    errcode |= clReleaseMemObject(ctx->mem_hashes);
+    errcode |= clReleaseMemObject(ctx->mem_hashes_reversed);
+    errcode |= clReleaseCommandQueue (ctx->queue);
+    errcode |= clReleaseProgram(ctx->program);
+    errcode |= clReleaseContext(ctx->cl_ctx);
 
     return errcode;
 }
 
-cl_int gpu_cruncher_ctx_submit_permut_task(gpu_cruncher_ctx *anactx, permut_task *task) {
-    if (anactx->tasks_in_buffer_count >= PERMUT_TASKS_IN_BATCH) {
+cl_int gpu_cruncher_ctx_submit_permut_task(gpu_cruncher_ctx *ctx, permut_task *task) {
+    if (ctx->tasks_in_buffer_count >= PERMUT_TASKS_IN_BATCH) {
         cl_int errcode;
-        errcode = gpu_cruncher_ctx_flush_tasks_buffer(anactx);
+        errcode = gpu_cruncher_ctx_flush_tasks_buffer(ctx);
         ret_iferr(errcode, "failed to flush tasks buffer");
     }
 
-    memcpy(&anactx->tasks_buffer[anactx->tasks_in_buffer_count++], task, sizeof(permut_task));
+//    memcpy(&ctx->tasks_buffer[ctx->tasks_in_buffer_count++], task, sizeof(permut_task));
     return CL_SUCCESS;
 }
 
-cl_int gpu_cruncher_ctx_flush_tasks_buffer(gpu_cruncher_ctx *anactx) {
+cl_int gpu_cruncher_ctx_flush_tasks_buffer(gpu_cruncher_ctx *ctx) {
 /*
     FILE *file = fopen("buffer.log", "w");
     for (int i=0; i<gpu_cruncher_ctx->tasks_in_buffer_count; i++) {
@@ -152,27 +153,27 @@ cl_int gpu_cruncher_ctx_flush_tasks_buffer(gpu_cruncher_ctx *anactx) {
 */
 
     cl_int errcode;
-    errcode = gpu_cruncher_ctx_wait_for_cur_kernel(anactx);
+    errcode = gpu_cruncher_ctx_wait_for_cur_kernel(ctx);
     ret_iferr(errcode, "failed to wait for current kernel");
 
     anakrnl_permut *krnl = malloc(sizeof(anakrnl_permut));
     ret_iferr(!krnl, "failed to malloc kernel");
-    errcode = anakrnl_permut_create(krnl, anactx, MAX_ITERS_PER_TASK, anactx->tasks_buffer, anactx->tasks_in_buffer_count);
-    ret_iferr(errcode, "failed to create kernel");
+//    errcode = anakrnl_permut_create(krnl, ctx, MAX_ITERS_PER_TASK, ctx->tasks_buffer, ctx->tasks_in_buffer_count);
+//    ret_iferr(errcode, "failed to create kernel");
 
     errcode = anakrnl_permut_enqueue(krnl);
     if (errcode) {
         fprintf(stderr, "%d: failed to enqueue kernel\n", errcode);
     }
 
-    anactx->cur_exec_kernel = krnl;
-    anactx->tasks_in_buffer_count = 0;
+    ctx->cur_exec_kernel = krnl;
+    ctx->tasks_in_buffer_count = 0;
 
     return CL_SUCCESS;
 }
 
-cl_int gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx *anactx) {
-    anakrnl_permut *krnl = anactx->cur_exec_kernel;
+cl_int gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx *ctx) {
+    anakrnl_permut *krnl = ctx->cur_exec_kernel;
     if (krnl == NULL) {
         return CL_SUCCESS;
     }
@@ -181,22 +182,22 @@ cl_int gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx *anactx) {
     errcode = anakrnl_permut_wait(krnl);
     ret_iferr(errcode, "failed to wait for current kernel");
 
-    const uint32_t *hashes_reversed = gpu_cruncher_ctx_read_hashes_reversed(anactx, &errcode);
+    const uint32_t *hashes_reversed = gpu_cruncher_ctx_read_hashes_reversed(ctx, &errcode);
     char hash_ascii[33];
     uint32_t hashes_found = 0;
-    for(int i=0; i<anactx->hashes_num; i++) {
+    for(int i=0; i<ctx->hashes_num; i++) {
         char* hash_reversed = (char*)hashes_reversed + i*MAX_STR_LENGTH;
         if (strlen(hash_reversed)) {
             hashes_found++;
         }
     }
 
-    if (hashes_found > anactx->hashes_seen) {
-        anactx->hashes_seen = hashes_found;
-        for(int i=0; i<anactx->hashes_num; i++) {
+    if (hashes_found > ctx->hashes_seen) {
+        ctx->hashes_seen = hashes_found;
+        for(int i=0; i<ctx->hashes_num; i++) {
             char* hash_reversed = (char*)hashes_reversed + i*MAX_STR_LENGTH;
             if (strlen(hash_reversed)) {
-                hash_to_ascii(anactx->hashes+i*4, hash_ascii);
+                hash_to_ascii(ctx->hashes+i*4, hash_ascii);
                 printf("%s:  %s\n", hash_ascii, hash_reversed);
             }
         }
@@ -207,7 +208,7 @@ cl_int gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx *anactx) {
     ret_iferr(errcode, "failed to free kernel");
 
     free(krnl);
-    anactx->cur_exec_kernel = NULL;
+    ctx->cur_exec_kernel = NULL;
 
     return CL_SUCCESS;
 }

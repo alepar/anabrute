@@ -1,8 +1,7 @@
 #ifndef ANABRUTE_OS_H
 #define ANABRUTE_OS_H
 
-#include <stdint.h>
-#include <unistd.h>
+#include "common.h"
 
 uint32_t num_cpu_cores();
 

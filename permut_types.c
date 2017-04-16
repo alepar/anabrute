@@ -1,6 +1,4 @@
-#include <memory.h>
-#include <stdlib.h>
-
+#include "common.h"
 #include "permut_types.h"
 
 bool char_counts_create(const char *s, char_counts *cc) {
