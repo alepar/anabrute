@@ -25,8 +25,6 @@ string_and_count scs[120];
 char_counts_strings* dict_by_char[CHARCOUNT][MAX_DICT_SIZE];
 int dict_by_char_len[CHARCOUNT] = {0};
 
-int debug_flag=0;
-
 int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs) {
     int permutable_count = 0;
     for (int i=0; i<permut_len; i++) {
@@ -39,29 +37,19 @@ int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs
         return 0;
     }
 
+    for (int j=0; j<permut_len; j++) {
+        char offset = permut[j];
+        if (offset < 0) {
+            offset = -offset;
+        } else {
+            printf("*");
+        }
+        offset--;
+        printf("%s ", all_strs+offset);
+    }
+    printf("\n");
+
 /*
-    if (permutable_count == 6) {
-        for (int j=0; j<MAX_OFFSETS_LENGTH && permut[j]; j++) {
-            char offset = permut[j];
-            if (offset < 0) {
-                offset = -offset;
-            } else {
-                printf("*");
-            }
-            offset--;
-            printf("%s ", all_strs+offset);
-        }
-        printf("\n");
-    }
-
-*/
-    for (int i=0; i<permut_len; i++) {
-        if (permut[i] > MAX_STR_LENGTH || permut[i] < -MAX_STR_LENGTH) {
-            printf("long gotcha!\n");
-            return 0;
-        }
-    }
-
     permut_task task;
     cl_int errcode;
 
@@ -76,6 +64,7 @@ int submit_tasks(anactx* anactx, int8_t permut[], int permut_len, char *all_strs
         errcode = anactx_submit_permut_task(anactx, &task);
         ret_iferr(errcode, "failed to submit task");
     }
+*/
 
     return 0;
 }
@@ -210,10 +199,6 @@ int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int 
         printf("\n");
     }*/
 
-    if (remainder->length == 0) {
-        return recurse_string_combs(anactx, stack, stack_len, 0, 0, scs, 0);
-    }
-
     // TODO skip
     int word_count=0;
     for (int i=0; i<stack_len; i++) {
@@ -221,6 +206,10 @@ int recurse_dict_words(anactx* anactx, char_counts *remainder, int curchar, int 
     }
     if(word_count > 7) {
         return 0;
+    }
+
+    if (remainder->length == 0) {
+        return recurse_string_combs(anactx, stack, stack_len, 0, 0, scs, 0);
     }
 
     for (;curchar<CHARCOUNT & !remainder->counts[curchar]; curchar++)

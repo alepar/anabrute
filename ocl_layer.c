@@ -253,6 +253,8 @@ cl_int anakrnl_permut_wait(anakrnl_permut *anakrnl) {
 }
 
 cl_int anakrnl_permut_free(anakrnl_permut *anakrnl) {
-    clReleaseMemObject(anakrnl->mem_permut_tasks);
-    clReleaseKernel(anakrnl->kernel);
+    cl_int errcode = CL_SUCCESS;
+    errcode |= clReleaseMemObject(anakrnl->mem_permut_tasks);
+    errcode |= clReleaseKernel(anakrnl->kernel);
+    return errcode;
 }
