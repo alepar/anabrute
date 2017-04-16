@@ -324,5 +324,5 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
         }
 
         counter++;
-    } while (counter<iters_per_item);
+    } while (counter < iters_per_item);
 }

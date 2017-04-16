@@ -23,6 +23,7 @@ char* read_file(const char* filename) {
         free(buf);
         return NULL;
     }
+    buf[filesize] = 0;
 
     return buf;
 }
@@ -53,6 +54,7 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
     size_t lengths[] = {strlen(kernel_source)};
     const char *sources[] = {kernel_source};
     ctx->program = clCreateProgramWithSource(ctx->cl_ctx, 1, sources, lengths, &errcode);
+    free(kernel_source);
     ret_iferr(errcode, "failed to create program");
     errcode = clBuildProgram(ctx->program, 0, NULL, NULL, NULL, NULL);
     if (errcode == CL_BUILD_PROGRAM_FAILURE) {

@@ -463,9 +463,9 @@ int main(int argc, char *argv[]) {
     cl_int errcode;
     gpu_cruncher_ctx gpu_cruncher_ctxs[num_gpu_crunchers];
     for (uint32_t i=0; i<num_gpu_crunchers; i++) {
-        errcode = gpu_cruncher_ctx_create(&gpu_cruncher_ctxs[i], platform_id, device_ids[i], &tasks_buffs);
+        errcode = gpu_cruncher_ctx_create(gpu_cruncher_ctxs+i, platform_id, device_ids[i], &tasks_buffs);
         ret_iferr(errcode, "failed to create gpu_cruncher_ctx");
-        errcode = gpu_cruncher_ctx_set_input_hashes(&gpu_cruncher_ctxs[i], hashes, hashes_num);
+        errcode = gpu_cruncher_ctx_set_input_hashes(gpu_cruncher_ctxs+i, hashes, hashes_num);
         ret_iferr(errcode, "failed to set input hashes");
     }
 
@@ -507,7 +507,7 @@ int main(int argc, char *argv[]) {
         for (int i=0; i<num_gpu_crunchers; i++) {
             buffs_gpus_consumed += gpu_cruncher_ctxs[i].consumed;
         }
-        printf("%d cpus: %d-%d/%d | %d buffs | %d gpus, %d buffs done\r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, buffs_gpus_consumed);
+        printf("%d cpus: %d-%d/%d | %d buffs | %d gpus | %d buffs done\n", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, buffs_gpus_consumed);
 
         if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) {
             tasks_buffers_close(&tasks_buffs);
