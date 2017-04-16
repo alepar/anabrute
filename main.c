@@ -188,7 +188,7 @@ int recurse_dict_words(cpu_cruncher_ctx* ctx, char_counts *remainder, int curcha
     for (int i=0; i<stack_len; i++) {
         word_count+=stack[i].count;
     }
-    if(word_count > 7) {
+    if(word_count > 9) {
         return 0;
     }
 
@@ -479,6 +479,9 @@ int main(int argc, char *argv[]) {
 
     // === create and start cruncher threads
 
+    struct timeval t0;
+    gettimeofday(&t0, 0);
+
     pthread_t cpu_threads[num_cpu_crunchers];
     for (int i=0; i<num_cpu_crunchers; i++) {
         int err = pthread_create(cpu_threads+i, NULL, run_cpu_cruncher_thread, cpu_cruncher_ctxs+i);
@@ -507,7 +510,8 @@ int main(int argc, char *argv[]) {
         for (int i=0; i<num_gpu_crunchers; i++) {
             buffs_gpus_consumed += gpu_cruncher_ctxs[i].consumed;
         }
-        printf("%d cpus: %d-%d/%d | %d buffs | %d gpus | %d buffs done\n", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, buffs_gpus_consumed);
+        printf("\r%d cpus: %d-%d/%d | %d buffs | %d gpus | %d buffs done\r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, buffs_gpus_consumed);
+        fflush(stdout);
 
         if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) {
             tasks_buffers_close(&tasks_buffs);
@@ -523,6 +527,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    struct timeval t1;
+    gettimeofday(&t1, 0);
+
     for (uint32_t i=0; i<num_cpu_crunchers; i++) {
         int err = pthread_join(cpu_threads[i], NULL);
         ret_iferr(err, "failed to join cpu thread");
@@ -533,5 +540,7 @@ int main(int argc, char *argv[]) {
     }
 
     // TODO free gpu_cruncher_ctx
-    printf("done\n");
+
+    long elapsed_millis = (t1.tv_sec-t0.tv_sec)*1000 + (t1.tv_usec-t0.tv_usec)/1000;
+    printf("done in %lusec\n", elapsed_millis/1000);
 }
