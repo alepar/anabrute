@@ -47,60 +47,63 @@ void print_permut(int8_t permut[], int len, char *strs) {
     printf("\n");
 }
 
-void print_permut_permut(int8_t permut[], int len, int8_t strs[], int8_t i, char *string) {
-    printf("\t");
-    print_permut(permut, len, strs);
+void print_permut_permut(int8_t permut[], int len, int8_t a[], int8_t n, char *strs) {
+    printf("\t\t");
+    for (int i=0; i<len; i++) {
+        if (permut[i] < 0) {
+            printf("%s ", &strs[-permut[i]-1]);
+        } else if (permut[i] > 0) {
+            printf("*%s ", &strs[a[permut[i]-1]-1]);
+        } else {
+            printf("* ");
+        }
+    }
+    printf("\n");
 }
 
 void iter_permuts(int8_t permut[], int len, char *strs) {
-    print_permut_permut(permut, len, strs, 0, NULL);
-    while(1) {
-        int k = -1;
-        int k1 = -1;
-        bool found = false;
 
-        for (int i=len-1; i>=0; i--) {
-            if (permut[i]>0) {
-                k1 = k;
-                k = i;
-                if (k1!=-1 && k!=-1 && permut[k]<permut[k1]) {
-                    found = true;
-                    break;
-                }
-            }
+    int8_t n=0;
+    for (int8_t i=0; i<len; i++) {
+        if (permut[i]>0) {
+            n++;
         }
+    }
 
-        if (!found) {
-            return;
+    int8_t c[n], a[n];
+    memset(c, 0, n);
+    int8_t d=0;
+    for (int8_t i=0; i<len; i++) {
+        if (permut[i]>0) {
+            a[d++] = permut[i];
+            permut[i] = d;
         }
+    }
 
-        int l;
-        for (l=len-1; l>k; l--) {
-            if (permut[l]>permut[k]) {
-                break;
-            }
-        }
+    print_permut_permut(permut, len, a, n, strs);
 
-        permut[l] ^= permut[k];
-        permut[k] ^= permut[l];
-        permut[l] ^= permut[k];
-
-        int li=k1, ri=len-1;
-        while (1) {
-            while(permut[li]<=0) li++;
-            while(permut[ri]<=0) ri--;
-
-            if (li < ri) {
-                permut[li] ^= permut[ri];
-                permut[ri] ^= permut[li];
-                permut[li] ^= permut[ri];
-
-                li++; ri--;
+    int i=0;
+    while (i<n) {
+        if (c[i] < i) {
+            if (i%2 == 0) {
+                a[0] ^= a[i];
+                a[i] ^= a[0];
+                a[0] ^= a[i];
             } else {
-                break;
+                a[c[i]] ^= a[i];
+                a[i] ^= a[c[i]];
+                a[c[i]] ^= a[i];
             }
+
+            print_permut_permut(permut, len, a, n, strs);
+
+            c[i]++;
+
+            i = 0;
+        } else {
+            c[i] = 0;
+            i++;
         }
-        print_permut_permut(permut, len, strs, 0, NULL);
     }
 }
 
