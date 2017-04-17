@@ -42,6 +42,7 @@ cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *ctx);
 cl_int gpu_cruncher_ctx_submit_permut_task(gpu_cruncher_ctx *ctx, permut_task *task);
 cl_int gpu_cruncher_ctx_flush_tasks_buffer(gpu_cruncher_ctx *ctx);
 cl_int gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx *ctx);
+void* run_gpu_cruncher_thread(void *ptr);
 
 typedef struct anakrnl_permut_s {
     gpu_cruncher_ctx *ctx;

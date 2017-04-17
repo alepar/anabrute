@@ -10,7 +10,7 @@ target_link_libraries (anabrute pthread)
 target_link_libraries (anabrute ${OpenCL_LIBRARY})
 #target_link_libraries (anabrute "C:/Program Files/NVIDIA Corporation/OpenCL/OpenCL64.dll")
 
-add_executable (kernel_debug gpu_cruncher.c hashes.c opencl_main.c permut_types.c seedphrase.c fact.c)
+add_executable (kernel_debug gpu_cruncher.c hashes.c kernel_debug.c permut_types.c seedphrase.c fact.c)
 set_property(TARGET kernel_debug PROPERTY C_STANDARD 99)
 target_include_directories (kernel_debug PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries (kernel_debug pthread)

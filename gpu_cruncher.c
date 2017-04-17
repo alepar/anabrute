@@ -263,3 +263,18 @@ cl_int anakrnl_permut_free(anakrnl_permut *anakrnl) {
     errcode |= clReleaseKernel(anakrnl->kernel);
     return errcode;
 }
+
+void* run_gpu_cruncher_thread(void *ptr) {
+    gpu_cruncher_ctx *ctx = ptr;
+
+    while(1) {
+        tasks_buffer *buf;
+        tasks_buffers_get_buffer(ctx->tasks_buffs, &buf);
+        if (buf == NULL) break; // ran out of buffers
+        tasks_buffer_free(buf);
+        ctx->consumed++;
+    }
+
+    ctx->is_running = false;
+    return NULL;
+}

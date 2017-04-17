@@ -32,7 +32,7 @@
 
 // has to be in sync with constants in permut.cl
 #define MAX_STR_LENGTH 40
-#define MAX_OFFSETS_LENGTH 20 // should always have 1 extra for 0-terminated
+#define MAX_OFFSETS_LENGTH 16 // should always have 1 extra for 0-terminated
 
 
 

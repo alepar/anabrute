@@ -5,7 +5,11 @@
 
 typedef struct permut_task_s {
     char all_strs[MAX_STR_LENGTH];
-    int8_t offsets[MAX_OFFSETS_LENGTH];  // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
+    int8_t offsets[MAX_OFFSETS_LENGTH];  // positives - permutable all_strs+(a[offset-1]-1), negatives - fixed all_strs+(-offset-1), zeroes - end terminators;
+    uint8_t a[MAX_OFFSETS_LENGTH];
+    uint8_t c[MAX_OFFSETS_LENGTH];
+    uint32_t i;     // 32_t to align structure to longs
+    uint32_t n;
 } permut_task;
 
 typedef struct tasks_buffer_s {

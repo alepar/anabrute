@@ -1,5 +1,5 @@
-//#define __global
-//#define __kernel
+#define __global
+#define __kernel
 
 /* MD5 OpenCL kernel based on Solar Designer's MD5 algorithm implementation at:
  * http://openwall.info/wiki/people/solar/software/public-domain-source-code/md5
@@ -131,13 +131,16 @@ void md5(const uint *key, uint *hash)
 // ====================
 
 #define MAX_STR_LENGTH 40
-#define MAX_OFFSETS_LENGTH 20
+#define MAX_OFFSETS_LENGTH 16
 
-typedef struct {
+typedef struct permut_task_s {
     uint all_strs[MAX_STR_LENGTH/4];
-    uint offsets[MAX_OFFSETS_LENGTH/4];  // positives - permutable, negatives - fixed, zeroes - empty; abs(offset)-1 to get offset in all_strs
-    uint start_from;
-} permut_template;
+    uint offsets[MAX_OFFSETS_LENGTH/4];
+    uint a[MAX_OFFSETS_LENGTH/4];
+    uint c[MAX_OFFSETS_LENGTH/4];
+    uint i;
+    uint n;
+} permut_task;
 
 ulong fact(uchar x) {
     switch(x) {
@@ -166,80 +169,36 @@ ulong fact(uchar x) {
     }
 }
 
-__kernel void permut(__global const permut_template *permut_templates, const uint iters_per_item, __global uint *hashes, uint hashes_num, __global uint *hashes_reversed) {
+__kernel void permut(__global const permut_task *tasks, const uint iters_per_task, __global const uint *hashes, const uint hashes_num, __global const uint *hashes_reversed) {
     ulong id = get_global_id(0);
-    __global const permut_template *tmpl = &permut_templates[id];
 
-    uint key[16];
-    ulong a = tmpl->start_from;
+    permut_task task;
 
-    char all_strs[MAX_STR_LENGTH];
-    uint *all_strs_uint = all_strs; // read as uints
-    for (uchar i=0; i<MAX_STR_LENGTH/4; i++) {
-        all_strs_uint[i] = tmpl->all_strs[i];
+    // reading as uints for speec
+    for (uchar i=0; i<sizeof(permut_template)/4; i++) {
+        *(((uint*)&task)+i) = *(((uint*)(tasks+id))+i);
     }
+
+    uint key[16];  // stores constructed string for md5 calculation
 
     uchar offsets_len;
-    char offsets[MAX_OFFSETS_LENGTH];
-    uint *offsets_uint = offsets; // read as uints
-    for (offsets_len=0; offsets_len<MAX_OFFSETS_LENGTH/4; offsets_len++) {
-        offsets_uint[offsets_len] = tmpl->offsets[offsets_len];
-    }
-    for (offsets_len=0; offsets_len<MAX_OFFSETS_LENGTH && offsets[offsets_len]; offsets_len++);
+    for (offsets_len=0; offsets_len<MAX_OFFSETS_LENGTH && task.offsets[offsets_len]; offsets_len++);
 
-    if (a>1) {
-        uchar unpicked_len = 0;
-        char unpicked[MAX_OFFSETS_LENGTH];
-        uchar idx_unp=0;
-
-        for (uchar i=0; i<offsets_len; i++) {
-            if (offsets[i] > 0) {
-                unpicked_len++;
-                unpicked[idx_unp++] = offsets[i];
-            }
-        }
-        unpicked_len = idx_unp;
-
-        uchar wo=0;
-        for (char d=unpicked_len-1; d>=0; d--) {
-            ulong factd = fact(d);
-            ulong ord = (a-1) / factd;
-            a -= ord * factd;
-
-            for (idx_unp=0; idx_unp<unpicked_len; idx_unp++) {
-                if (unpicked[idx_unp]>0) {
-                    if (ord == 0) {
-                        for (; wo<offsets_len; wo++) {
-                            if (offsets[wo] > 0) {
-                                offsets[wo++] = unpicked[idx_unp];
-                                break;
-                            }
-                        }
-
-                        unpicked[idx_unp] = 0;
-                        break;
-                    } else {
-                        ord--;
-                    }
-                }
-            }
-        }
-    }
-
-    uint counter=0;
+    uint iter_counter=0;
     uint computed_hash[4];
-    do {
+    while (iter_counter < iters_per_task) {
         for (uchar ik=0; ik<16; ik++) {
             key[ik] = 0;
         }
         // construct key
         uchar wcs=0;
         for (uchar io=0; io<offsets_len; io++) {
-            char off = offsets[io];
+            char off = task.offsets[io];
             if (off < 0) {
-                off = -off;
+                off = -off-1;
+            } else {
+                off = task.a[off-1]-1;
             }
-            off--;
 
             while (all_strs[off]) {
                 PUTCHAR(key, wcs, all_strs[off]);
@@ -278,51 +237,37 @@ __kernel void permut(__global const permut_template *permut_templates, const uin
         }
 
         // find next permut if possible
-        char k = -1;
-        char k1 = -1;
-        char found = 0;
 
-        for (char io=offsets_len-1; io>=0; io--) {
-            if (offsets[io]>0) {
-                k1 =k;
-                k = io;
-
-                if (k1 != -1 && k!=-1 && offsets[k]<offsets[k1]) {
-                    found = 1;
-                    break;
+        while (task.i < task.n) {
+            if (task.c[task.i] < task.i) {
+                if (task.i%2 == 0) {
+                    task.a[0] ^= task.a[i];
+                    task.a[task.i] ^= task.a[0];
+                    task.a[0] ^= task.a[task.i];
+                } else {
+                    task.a[task.c[task.i]] ^= task.a[task.i];
+                    task.a[task.i] ^= task.a[task.c[task.i]];
+                    task.a[task.c[task.i]] ^= task.a[task.i];
                 }
+
+                task.c[task.i]++;
+                task.i = 0;
+                iter_counter++;
+                continue; // consume generated permutation
+            } else {
+                task.c[task.i] = 0;
+                task.i++;
             }
         }
 
-        if (!found) {
-            break;
-        }
+        // no permutations left, exiting
+        iter_counter = iters_per_task+1;
+    }
 
-        char l;
-        for (l=offsets_len-1; l>k; l--) {
-            if (offsets[l]>offsets[k]) {
-                break;
-            }
-        }
+    // write out state (to resume or signal completion)
+    // skip offsets and all_strs, as those never change
+    for (uchar i=MAX_OFFSETS_LENGTH/2; i<sizeof(permut_template)/4; i++) {
+        *(((uint*)(tasks+id))+i) = *(((uint*)&task)+i);
+    }
 
-        offsets[l] ^= offsets[k];
-        offsets[k] ^= offsets[l];
-        offsets[l] ^= offsets[k];
-
-        char li=k1, ri=offsets_len-1;
-        while(li<ri) {
-            while(offsets[li]<=0 && li<ri) li++;
-            while(offsets[ri]<=0 && li<ri) ri--;
-
-            if (li < ri) {
-                offsets[li] ^= offsets[ri];
-                offsets[ri] ^= offsets[li];
-                offsets[li] ^= offsets[ri];
-
-                li++; ri--;
-            }
-        }
-
-        counter++;
-    } while (counter < iters_per_item);
 }
