@@ -71,6 +71,26 @@ tasks_buffer *create_and_fill_task_buffer() {
     return buf;
 }
 
+tasks_buffer *create_and_fill_task_buffer2() {
+    const char* all_strs = "s\0x\0y\0z\0a\0b\0f\0g\0h";
+    const int8_t a[] = {3, 5, 7, 9, 11, 13, 15, 17, 0};
+    const int8_t offsets[] = { 1, 2, 3, -1, 4, 5, 6, -1, 7, 8, 0 };
+
+    tasks_buffer* buf = tasks_buffer_allocate();
+    permut_task *task = buf->permut_tasks;
+    buf->num_tasks = 1;
+
+    memcpy(&task->all_strs, all_strs, 18);
+    memcpy(&task->offsets, offsets, 11);
+    memcpy(&task->a, a, 8);
+    memset(&task->c, 0, 8);
+
+    task->i = 0;
+    task->n = 8;
+
+    return buf;
+}
+
 int main(int argc, char *argv[]) {
     cl_platform_id platform_id;
     cl_uint num_platforms;
@@ -115,6 +135,9 @@ int main(int argc, char *argv[]) {
 
     for (int i=0; i<1; i++) {
         tasks_buffers_add_buffer(&tasks_bufs, create_and_fill_task_buffer());
+        sleep(1);
+        tasks_buffers_add_buffer(&tasks_bufs, create_and_fill_task_buffer2());
+        sleep(1);
     }
     tasks_buffers_close(&tasks_bufs);
 

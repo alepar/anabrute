@@ -143,3 +143,12 @@ int tasks_buffers_close(tasks_buffers* buffs) {
 
     return 0;
 }
+
+int tasks_buffers_num_ready(tasks_buffers* buffs) {
+    // opportunistically peek
+    if (buffs->is_closed) {
+        return -1;
+    }
+
+    return buffs->num_ready;
+}

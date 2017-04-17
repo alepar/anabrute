@@ -121,21 +121,27 @@ void* run_gpu_cruncher_thread(void *ptr) {
     memset(dst_buf->permut_tasks, 0, PERMUT_TASKS_IN_KERNEL_TASK*sizeof(permut_task));
 
     main: while(1) {
-        if (src_buf != NULL && src_idx >= src_buf->num_tasks) {
+        if (src_buf != NULL && src_idx >= src_buf->num_tasks && tasks_buffers_num_ready(ctx->tasks_buffs)) {
             // fetch new buffer from queue
             ctx->bufs_consumed++;
             tasks_buffer_free(src_buf);
             errcode = tasks_buffers_get_buffer(ctx->tasks_buffs, &src_buf);;
             ret_iferr(errcode, "failed to get first buffer");
+            src_idx = 0;
         } else {
             // prepare dst_buf
+            // TODO compaction?
             for (uint32_t i=dst_buf->num_tasks; i<PERMUT_TASKS_IN_KERNEL_TASK; i++) {
                 permut_task *dst_task = dst_buf->permut_tasks + i;
                 if (dst_task->i >= dst_task->n) {
                     // task is finished
                     if (src_buf != NULL) {  // do we still have src buffers?
                         if (src_idx >= src_buf->num_tasks) {  // need new src_buf
-                            goto main;
+                            if (dst_buf->num_tasks == 0 || tasks_buffers_num_ready(ctx->tasks_buffs)>0) {
+                                goto main;
+                            } else {
+                                break; // seems like we're temporarily out of buffers, run what we have
+                            }
                         }
 
                         memcpy(dst_task, src_buf->permut_tasks + src_idx++, sizeof(permut_task));
