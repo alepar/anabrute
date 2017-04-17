@@ -28,7 +28,7 @@
 // peak at ~256-512K, try lowering if kernel times out
 #define PERMUT_TASKS_IN_BATCH 256*1024
 // peak at ~512, try lowering if kernel times out
-#define MAX_ITERS_PER_TASK 512
+#define MAX_ITERS_PER_KERNEL_TASK 512
 
 // has to be in sync with constants in permut.cl
 #define MAX_STR_LENGTH 40

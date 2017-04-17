@@ -1,5 +1,5 @@
-#define __global
-#define __kernel
+//#define __global
+//#define __kernel
 
 /* MD5 OpenCL kernel based on Solar Designer's MD5 algorithm implementation at:
  * http://openwall.info/wiki/people/solar/software/public-domain-source-code/md5
@@ -169,14 +169,18 @@ ulong fact(uchar x) {
     }
 }
 
-__kernel void permut(__global const permut_task *tasks, const uint iters_per_task, __global const uint *hashes, const uint hashes_num, __global const uint *hashes_reversed) {
+__kernel void permut(__global const permut_task *tasks, const uint iters_per_task, __global const uint *hashes, const uint hashes_num, __global uint *hashes_reversed) {
     ulong id = get_global_id(0);
 
     permut_task task;
 
     // reading as uints for speec
-    for (uchar i=0; i<sizeof(permut_template)/4; i++) {
+    for (uchar i=0; i<sizeof(permut_task)/4; i++) {
         *(((uint*)&task)+i) = *(((uint*)(tasks+id))+i);
+    }
+
+    if (task.i >= task.n) { // this task is already completed
+        return;
     }
 
     uint key[16];  // stores constructed string for md5 calculation
@@ -200,8 +204,8 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
                 off = task.a[off-1]-1;
             }
 
-            while (all_strs[off]) {
-                PUTCHAR(key, wcs, all_strs[off]);
+            while (task.all_strs[off]) {
+                PUTCHAR(key, wcs, task.all_strs[off]);
                 wcs++; off++;
             }
             PUTCHAR(key, wcs, ' ');
@@ -241,7 +245,7 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
         while (task.i < task.n) {
             if (task.c[task.i] < task.i) {
                 if (task.i%2 == 0) {
-                    task.a[0] ^= task.a[i];
+                    task.a[0] ^= task.a[task.i];
                     task.a[task.i] ^= task.a[0];
                     task.a[0] ^= task.a[task.i];
                 } else {
@@ -266,7 +270,7 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
 
     // write out state (to resume or signal completion)
     // skip offsets and all_strs, as those never change
-    for (uchar i=MAX_OFFSETS_LENGTH/2; i<sizeof(permut_template)/4; i++) {
+    for (uchar i=MAX_OFFSETS_LENGTH/2; i<sizeof(permut_task)/4; i++) {
         *(((uint*)(tasks+id))+i) = *(((uint*)&task)+i);
     }
 

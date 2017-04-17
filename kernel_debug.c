@@ -51,6 +51,26 @@ const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
     return hashes_num;
 }
 
+tasks_buffer *create_and_fill_task_buffer() {
+    const char* all_strs = "t\0x\0y\0z\0a\0b\0c\0d\0e";
+    const int8_t a[] = {3, 5, 7, 9, 11, 13, 15, 17, 0};
+    const int8_t offsets[] = { 1, 2, -1, 3, 4, -1, 5, 6, 7, 8, 0 };
+
+    tasks_buffer* buf = tasks_buffer_allocate();
+    permut_task *task = buf->permut_tasks;
+    buf->num_tasks = 1;
+
+    memcpy(&task->all_strs, all_strs, 18);
+    memcpy(&task->offsets, offsets, 11);
+    memcpy(&task->a, a, 8);
+    memset(&task->c, 0, 8);
+
+    task->i = 0;
+    task->n = 8;
+
+    return buf;
+}
+
 int main(int argc, char *argv[]) {
     cl_platform_id platform_id;
     cl_uint num_platforms;
@@ -63,44 +83,38 @@ int main(int argc, char *argv[]) {
     ret_iferr(!num_devices, "no devices");
 
     char char_buf[1024];
-    for (int i=0; i<num_devices; i++) {
-        cl_ulong local_mem; char local_mem_str[32];
-        cl_ulong global_mem; char global_mem_str[32];
+    cl_ulong local_mem; char local_mem_str[32];
+    cl_ulong global_mem; char global_mem_str[32];
 
-        clGetDeviceInfo(device_id, CL_DEVICE_GLOBAL_MEM_SIZE, 8, &global_mem, NULL);
-        clGetDeviceInfo(device_id, CL_DEVICE_LOCAL_MEM_SIZE, 8, &local_mem, NULL);
-        clGetDeviceInfo (device_id, CL_DEVICE_NAME, 1024, char_buf, NULL);
+    clGetDeviceInfo(device_id, CL_DEVICE_GLOBAL_MEM_SIZE, 8, &global_mem, NULL);
+    clGetDeviceInfo(device_id, CL_DEVICE_LOCAL_MEM_SIZE, 8, &local_mem, NULL);
+    clGetDeviceInfo (device_id, CL_DEVICE_NAME, 1024, char_buf, NULL);
 
-        format_bignum(global_mem, global_mem_str, 1024);
-        format_bignum(local_mem, local_mem_str, 1024);
-        printf("OpenCL device #%d: %s (g:%siB l:%siB)\n", i+1, char_buf, global_mem_str, local_mem_str);
-    }
+    format_bignum(global_mem, global_mem_str, 1024);
+    format_bignum(local_mem, local_mem_str, 1024);
+    printf("OpenCL device: %s (g:%siB l:%siB)\n", char_buf, global_mem_str, local_mem_str);
     printf("\n");
 
     uint32_t *hashes;
-    const uint32_t hashes_num = read_hashes("input.hashes", &hashes);
+    const uint32_t hashes_num = read_hashes("input.hashes.debug", &hashes);
     ret_iferr(!hashes_num, "failed to read hashes");
     ret_iferr(!hashes, "failed to allocate hashes");
 
     tasks_buffers tasks_bufs;
+    tasks_buffers_create(&tasks_bufs);
 
     cl_int errcode;
     gpu_cruncher_ctx ctx;
 
-    errcode = gpu_cruncher_ctx_create(&ctx, platform_id, device_id, &tasks_bufs);
+    errcode = gpu_cruncher_ctx_create(&ctx, platform_id, device_id, &tasks_bufs, hashes, hashes_num);
     ret_iferr(errcode, "failed to create gpu_cruncher_ctx");
-
-    errcode = gpu_cruncher_ctx_set_input_hashes(&ctx, hashes, hashes_num);
-    ret_iferr(errcode, "failed to set input hashes");
 
     pthread_t gpu_thread;
     int err = pthread_create(&gpu_thread, NULL, run_gpu_cruncher_thread, &ctx);
     ret_iferr(err, "failed to create gpu thread");
 
     for (int i=0; i<1; i++) {
-        // TODO create and submit task buffer
-//        printf("iter\n");
-//        run_kernel(&ctx);
+        tasks_buffers_add_buffer(&tasks_bufs, create_and_fill_task_buffer());
     }
     tasks_buffers_close(&tasks_bufs);
 
