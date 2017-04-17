@@ -43,7 +43,6 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
 
     ctx->hashes = hashes;
     ctx->hashes_num = hashes_num;
-    ctx->hashes_reversed = NULL;
 
     cl_int errcode;
     const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
@@ -119,7 +118,7 @@ void* run_gpu_cruncher_thread(void *ptr) {
     uint32_t src_idx = 0;
 
     tasks_buffer* dst_buf = tasks_buffer_allocate();
-    memset(dst_buf->permut_tasks, 0, PERMUT_TASKS_IN_BATCH*sizeof(permut_task));
+    memset(dst_buf->permut_tasks, 0, PERMUT_TASKS_IN_KERNEL_TASK*sizeof(permut_task));
 
     main: while(1) {
         if (src_buf != NULL && src_idx >= src_buf->num_tasks) {
@@ -130,7 +129,7 @@ void* run_gpu_cruncher_thread(void *ptr) {
             ret_iferr(errcode, "failed to get first buffer");
         } else {
             // prepare dst_buf
-            for (uint32_t i=0; i<PERMUT_TASKS_IN_BATCH; i++) {
+            for (uint32_t i=dst_buf->num_tasks; i<PERMUT_TASKS_IN_KERNEL_TASK; i++) {
                 permut_task *dst_task = dst_buf->permut_tasks + i;
                 if (dst_task->i >= dst_task->n) {
                     // task is finished
@@ -147,9 +146,14 @@ void* run_gpu_cruncher_thread(void *ptr) {
                 }
             }
 
+            if (dst_buf->num_tasks == 0) {
+                // we ran out of buffers, exit
+                break;
+            }
+
             // schedule kernel with dst_buf
             krnl_permut krnl;
-            errcode = krnl_permut_create(&krnl, ctx, MAX_ITERS_PER_KERNEL_TASK, dst_buf);
+            errcode = krnl_permut_create(&krnl, ctx, MAX_ITERS_IN_KERNEL_TASK, dst_buf);
             ret_iferr(errcode, "failed to create kernel");
 
             errcode = krnl_permut_enqueue(&krnl);
@@ -158,7 +162,10 @@ void* run_gpu_cruncher_thread(void *ptr) {
             errcode = krnl_permut_wait(&krnl);
             ret_iferr(errcode, "failed to wait for kernel");
 
-            // TODO read buf back
+            errcode = krnl_permut_read_tasks(&krnl, dst_buf);
+            ret_iferr(errcode, "failed to read tasks out from gpu");
+            dst_buf->num_tasks = 0;
+
             // TODO update progress
             // TODO fetch hashes reversed
 /*
@@ -200,13 +207,14 @@ cl_int krnl_permut_create(krnl_permut *krnl, gpu_cruncher_ctx *ctx, uint32_t ite
 
     krnl->ctx = ctx;
     krnl->iters_per_task = iters_per_krnl_task;
-    krnl->buf = buf;
 
     krnl->kernel = clCreateKernel(ctx->program, "permut", &errcode);
     ret_iferr(errcode, "failed to create permut kernel");
 
     krnl->mem_permut_tasks = clCreateBuffer(ctx->cl_ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, buf->num_tasks*sizeof(permut_task), buf->permut_tasks, &errcode);
     ret_iferr(errcode, "failed to create mem_permut_tasks");
+
+    krnl->tasks_in_last_buf = buf->num_tasks;
 
 /*
     __kernel void permut(
@@ -226,7 +234,7 @@ cl_int krnl_permut_create(krnl_permut *krnl, gpu_cruncher_ctx *ctx, uint32_t ite
 }
 
 cl_int krnl_permut_enqueue(krnl_permut *krnl) {
-    size_t globalWorkSize[] = {krnl->buf->num_tasks, 0, 0};
+    size_t globalWorkSize[] = {krnl->tasks_in_last_buf, 0, 0};
     return clEnqueueNDRangeKernel(krnl->ctx->queue, krnl->kernel, 1, NULL, globalWorkSize, NULL, 0, NULL, &krnl->event);
 }
 
@@ -241,3 +249,13 @@ cl_int krnl_permut_free(krnl_permut *krnl) {
     return errcode;
 }
 
+cl_int krnl_permut_read_tasks(krnl_permut *krnl, tasks_buffer* buf) {
+    int errcode;
+
+    errcode = clEnqueueReadBuffer (krnl->ctx->queue, krnl->mem_permut_tasks, CL_TRUE, 0, krnl->tasks_in_last_buf * sizeof(permut_task), buf->permut_tasks, 0, NULL, NULL);
+    ret_iferr(errcode, "failed to read permut_tasks from gpu");
+
+    buf->num_tasks = krnl->tasks_in_last_buf;
+
+    return errcode;
+}

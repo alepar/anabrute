@@ -4,7 +4,7 @@ tasks_buffer* tasks_buffer_allocate() {
     tasks_buffer* buffer = calloc(1, sizeof(tasks_buffer));
     if(!buffer) return NULL;
 
-    buffer->permut_tasks = calloc(PERMUT_TASKS_IN_BATCH, sizeof(permut_task));
+    buffer->permut_tasks = calloc(PERMUT_TASKS_IN_KERNEL_TASK, sizeof(permut_task));
     buffer->num_tasks = 0;
     return buffer;
 }
@@ -15,7 +15,7 @@ void tasks_buffer_free(tasks_buffer* buf) {
 }
 
 bool tasks_buffer_isfull(tasks_buffer* buf) {
-    return buf->num_tasks >= PERMUT_TASKS_IN_BATCH;
+    return buf->num_tasks >= PERMUT_TASKS_IN_KERNEL_TASK;
 }
 
 void tasks_buffer_add_task(tasks_buffer* buf, char* all_strs, int8_t* offsets) {

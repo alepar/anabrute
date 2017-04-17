@@ -134,10 +134,10 @@ void md5(const uint *key, uint *hash)
 #define MAX_OFFSETS_LENGTH 16
 
 typedef struct permut_task_s {
-    uint all_strs[MAX_STR_LENGTH/4];
-    uint offsets[MAX_OFFSETS_LENGTH/4];
-    uint a[MAX_OFFSETS_LENGTH/4];
-    uint c[MAX_OFFSETS_LENGTH/4];
+    char all_strs[MAX_STR_LENGTH];
+    char offsets[MAX_OFFSETS_LENGTH];
+    uchar a[MAX_OFFSETS_LENGTH];
+    uchar c[MAX_OFFSETS_LENGTH];
     uint i;
     uint n;
 } permut_task;
@@ -267,7 +267,7 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
 
     // write out state (to resume or signal completion)
     // skip offsets and all_strs, as those never change
-    for (uchar i=MAX_OFFSETS_LENGTH/2; i<sizeof(permut_task)/4; i++) {
+    for (uchar i=MAX_STR_LENGTH/4+MAX_OFFSETS_LENGTH/4; i<sizeof(permut_task)/4; i++) {
         *(((uint*)(tasks+id))+i) = *(((uint*)&task)+i);
     }
 

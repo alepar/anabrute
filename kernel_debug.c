@@ -130,9 +130,7 @@ int main(int argc, char *argv[]) {
         printf("%s:  %s\n", hash_ascii, (char*)&hashes_reversed[i*MAX_STR_LENGTH/4]);
     }
 
-    for (int i=0; i<num_devices; i++) {
-        gpu_cruncher_ctx_free(&ctx);
-    }
+    gpu_cruncher_ctx_free(&ctx);
 
     return 0;
 }

@@ -45,11 +45,12 @@ typedef struct krnl_permut_s {
     cl_mem mem_permut_tasks;
 
     uint32_t iters_per_task;
-    tasks_buffer* buf;
+    uint32_t tasks_in_last_buf;
 } krnl_permut;
 
 cl_int krnl_permut_create(krnl_permut *krnl, gpu_cruncher_ctx *ctx, uint32_t iters_per_krnl_task, tasks_buffer* buf);
 cl_int krnl_permut_enqueue(krnl_permut *krnl);
+cl_int krnl_permut_read_tasks(krnl_permut *krnl, tasks_buffer* buf);
 cl_int krnl_permut_wait(krnl_permut *krnl);
 cl_int krnl_permut_free(krnl_permut *krnl);
 
