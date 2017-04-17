@@ -185,18 +185,15 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
 
     uint key[16];  // stores constructed string for md5 calculation
 
-    uchar offsets_len;
-    for (offsets_len=0; offsets_len<MAX_OFFSETS_LENGTH && task.offsets[offsets_len]; offsets_len++);
-
     uint iter_counter=0;
     uint computed_hash[4];
-    while (iter_counter < iters_per_task) {
+    main: while (iter_counter < iters_per_task) {
         for (uchar ik=0; ik<16; ik++) {
             key[ik] = 0;
         }
         // construct key
         uchar wcs=0;
-        for (uchar io=0; io<offsets_len; io++) {
+        for (uchar io=0; task.offsets[io]; io++) {
             char off = task.offsets[io];
             if (off < 0) {
                 off = -off-1;
@@ -257,7 +254,7 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
                 task.c[task.i]++;
                 task.i = 0;
                 iter_counter++;
-                continue; // consume generated permutation
+                goto main; // consume generated permutation
             } else {
                 task.c[task.i] = 0;
                 task.i++;

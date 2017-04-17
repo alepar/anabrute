@@ -155,10 +155,10 @@ void* run_gpu_cruncher_thread(void *ptr) {
             errcode = krnl_permut_enqueue(&krnl);
             ret_iferr(errcode, "failed to enqueue kernel");
 
-            printf("waiting\n");
             errcode = krnl_permut_wait(&krnl);
             ret_iferr(errcode, "failed to wait for kernel");
-            printf("waiting done\n");
+
+            // TODO read buf back
             // TODO update progress
             // TODO fetch hashes reversed
 /*
@@ -205,7 +205,7 @@ cl_int krnl_permut_create(krnl_permut *krnl, gpu_cruncher_ctx *ctx, uint32_t ite
     krnl->kernel = clCreateKernel(ctx->program, "permut", &errcode);
     ret_iferr(errcode, "failed to create permut kernel");
 
-    krnl->mem_permut_tasks = clCreateBuffer(ctx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, buf->num_tasks*sizeof(permut_task), buf->permut_tasks, &errcode);
+    krnl->mem_permut_tasks = clCreateBuffer(ctx->cl_ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, buf->num_tasks*sizeof(permut_task), buf->permut_tasks, &errcode);
     ret_iferr(errcode, "failed to create mem_permut_tasks");
 
 /*
