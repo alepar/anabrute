@@ -28,7 +28,8 @@ typedef struct gpu_cruncher_ctx_s {
 
     // progress
     volatile bool is_running;
-    volatile uint32_t bufs_consumed;
+    volatile uint32_t consumed_bufs;
+    volatile uint64_t consumed_anas;
 } gpu_cruncher_ctx;
 
 cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id, cl_device_id device_id,

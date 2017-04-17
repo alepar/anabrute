@@ -52,6 +52,14 @@ const uint32_t read_hashes(char *file_name, uint32_t **hashes) {
 }
 
 tasks_buffer *create_and_fill_task_buffer() {
+/*
+    df12bc796f2c4086ffa056b35b8cafde: x y t z a t b c d e
+    3e1ebec048ca5f02e3d47ad33b0e2b08: a z t x y t e d c b
+    ad2ae8b0c720abc7fefe5f7476d947c7: b c t d e t z a x y
+    10eda7b7fb6bc8bd559a896167dc7486: d b t e c t y x a z
+    9313c10eab276ddf2de6ff3d040b752e: e d t c b t a z y x
+*/
+
     const char* all_strs = "t\0x\0y\0z\0a\0b\0c\0d\0e";
     const int8_t a[] = {3, 5, 7, 9, 11, 13, 15, 17, 0};
     const int8_t offsets[] = { 1, 2, -1, 3, 4, -1, 5, 6, 7, 8, 0 };
@@ -72,6 +80,14 @@ tasks_buffer *create_and_fill_task_buffer() {
 }
 
 tasks_buffer *create_and_fill_task_buffer2() {
+/*
+    81681bbf0446c002fc59c43f6ee4b390: x y z s a b f s g h
+    2bdec9b6b72db90fd63a37252cedcf68: y x a s b z f s g h
+    7bf742a10f73efc64c3de4f934a7fbe6: a b z s h g f s y x
+    1f0038c914d8cd66cc94595ce5328792: f y z s a b x s g h
+    36ee3b2c5ee4a8193e0311f1d3451844: h x z s a b f s g y
+*/
+
     const char* all_strs = "s\0x\0y\0z\0a\0b\0f\0g\0h";
     const int8_t a[] = {3, 5, 7, 9, 11, 13, 15, 17, 0};
     const int8_t offsets[] = { 1, 2, 3, -1, 4, 5, 6, -1, 7, 8, 0 };
@@ -152,6 +168,10 @@ int main(int argc, char *argv[]) {
         hash_to_ascii(&hashes[i*4], hash_ascii);
         printf("%s:  %s\n", hash_ascii, (char*)&hashes_reversed[i*MAX_STR_LENGTH/4]);
     }
+
+    char strbuf[1024];
+    format_bignum(ctx.consumed_anas, strbuf, 1000);
+    printf("consumed %d bufs, %sanas\n", ctx.consumed_bufs, strbuf);
 
     gpu_cruncher_ctx_free(&ctx);
 

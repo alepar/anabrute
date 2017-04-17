@@ -493,7 +493,7 @@ int main(int argc, char *argv[]) {
 
         uint32_t buffs_gpus_consumed = 0;
         for (int i=0; i<num_gpu_crunchers; i++) {
-            buffs_gpus_consumed += gpu_cruncher_ctxs[i].bufs_consumed;
+            buffs_gpus_consumed += gpu_cruncher_ctxs[i].consumed_bufs;
         }
         printf("\r%d cpus: %d-%d/%d | %d buffs | %d gpus | %d buffs done\r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, buffs_gpus_consumed);
         fflush(stdout);

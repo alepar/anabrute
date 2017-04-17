@@ -3,6 +3,7 @@
 
 #include "gpu_cruncher.h"
 #include "hashes.h"
+#include "fact.h"
 
 // private stuff
 
@@ -39,7 +40,8 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
     ctx->tasks_buffs = tasks_buffs;
 
     ctx->is_running = true;
-    ctx->bufs_consumed = 0;
+    ctx->consumed_bufs = 0;
+    ctx->consumed_anas = 0L;
 
     ctx->hashes = hashes;
     ctx->hashes_num = hashes_num;
@@ -123,7 +125,7 @@ void* run_gpu_cruncher_thread(void *ptr) {
     main: while(1) {
         if (src_buf != NULL && src_idx >= src_buf->num_tasks && tasks_buffers_num_ready(ctx->tasks_buffs)) {
             // fetch new buffer from queue
-            ctx->bufs_consumed++;
+            ctx->consumed_bufs++;
             tasks_buffer_free(src_buf);
             errcode = tasks_buffers_get_buffer(ctx->tasks_buffs, &src_buf);;
             ret_iferr(errcode, "failed to get first buffer");
@@ -135,6 +137,11 @@ void* run_gpu_cruncher_thread(void *ptr) {
                 permut_task *dst_task = dst_buf->permut_tasks + i;
                 if (dst_task->i >= dst_task->n) {
                     // task is finished
+                    if (dst_task->n) {
+                        ctx->consumed_anas += fact(dst_task->n);
+                        dst_task->n = 0;
+                    }
+
                     if (src_buf != NULL) {  // do we still have src buffers?
                         if (src_idx >= src_buf->num_tasks) {  // need new src_buf
                             if (dst_buf->num_tasks == 0 || tasks_buffers_num_ready(ctx->tasks_buffs)>0) {
