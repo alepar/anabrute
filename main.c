@@ -7,17 +7,6 @@
 #include "permut_types.h"
 
 int submit_tasks(cpu_cruncher_ctx* ctx, int8_t permut[], int permut_len, char *all_strs) {
-    int permutable_count = 0;
-    for (int i=0; i<permut_len; i++) {
-        if (permut[i] > 0) {
-            permutable_count++;
-        }
-    }
-
-    if (permutable_count > 11) { // TODO skip lengthes > 11 for now
-        return 0;
-    }
-
 /*
     if (ctx->cpu_cruncher_id == 0) {
         for (int j=0; j<permut_len; j++) {
@@ -153,23 +142,6 @@ int recurse_string_combs(cpu_cruncher_ctx* ctx, stack_item *stack, int stack_len
 }
 
 int recurse_dict_words(cpu_cruncher_ctx* ctx, char_counts *remainder, int curchar, int curdictidx, stack_item *stack, int stack_len, string_and_count *scs) {
-/*
-    // TODO debug
-    if (stack_len == 1) {
-        if (strcmp(stack[0].ccs->strings[0], "outstations")) {
-            if (debug_flag) {
-                printf("flushing\n");
-                gpu_cruncher_ctx_flush_tasks_buffer(gpu_cruncher_ctx);
-                printf("waiting\n");
-                gpu_cruncher_ctx_wait_for_cur_kernel(gpu_cruncher_ctx);
-            }
-            debug_flag=0;
-        } else {
-            debug_flag=1;
-        }
-    }
-*/
-
 /*    if (debug_flag) {
         printf("\t%d\t%d\t%d\t%d\t||\t", remainder->length, curchar, curdictidx, stack_len);
         for (int i=0; i<stack_len; i++) {
@@ -183,12 +155,11 @@ int recurse_dict_words(cpu_cruncher_ctx* ctx, char_counts *remainder, int curcha
         printf("\n");
     }*/
 
-    // TODO skip
     int word_count=0;
     for (int i=0; i<stack_len; i++) {
         word_count+=stack[i].count;
     }
-    if(word_count > 9) {
+    if(word_count > MAX_WORD_LENGTH) {
         return 0;
     }
 
@@ -448,10 +419,8 @@ int main(int argc, char *argv[]) {
     cl_int errcode;
     gpu_cruncher_ctx gpu_cruncher_ctxs[num_gpu_crunchers];
     for (uint32_t i=0; i<num_gpu_crunchers; i++) {
-        errcode = gpu_cruncher_ctx_create(gpu_cruncher_ctxs+i, platform_id, device_ids[i], &tasks_buffs);
+        errcode = gpu_cruncher_ctx_create(gpu_cruncher_ctxs+i, platform_id, device_ids[i], &tasks_buffs, hashes, hashes_num);
         ret_iferr(errcode, "failed to create gpu_cruncher_ctx");
-        errcode = gpu_cruncher_ctx_set_input_hashes(gpu_cruncher_ctxs+i, hashes, hashes_num);
-        ret_iferr(errcode, "failed to set input hashes");
     }
 
     // === create cpu cruncher contexts
@@ -495,6 +464,8 @@ int main(int argc, char *argv[]) {
         for (int i=0; i<num_gpu_crunchers; i++) {
             buffs_gpus_consumed += gpu_cruncher_ctxs[i].consumed_bufs;
         }
+        // TODO print out new hashes as we go
+        // TODO display utilization, hashing speed
         printf("\r%d cpus: %d-%d/%d | %d buffs | %d gpus | %d buffs done\r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, buffs_gpus_consumed);
         fflush(stdout);
 
@@ -529,5 +500,6 @@ int main(int argc, char *argv[]) {
     // TODO free gpu_cruncher_ctx
 
     long elapsed_millis = (t1.tv_sec-t0.tv_sec)*1000 + (t1.tv_usec-t0.tv_usec)/1000;
+    // TODO cumulative overall/avg stats
     printf("done in %lusec\n", elapsed_millis/1000);
 }

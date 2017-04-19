@@ -20,8 +20,28 @@ bool tasks_buffer_isfull(tasks_buffer* buf) {
 }
 
 void tasks_buffer_add_task(tasks_buffer* buf, char* all_strs, int8_t* offsets) {
-    memcpy(&((buf->permut_tasks+buf->num_tasks)->all_strs), all_strs, MAX_STR_LENGTH);
-    memcpy(&((buf->permut_tasks+buf->num_tasks)->offsets), offsets, MAX_OFFSETS_LENGTH);
+    permut_task *dst_task = buf->permut_tasks + buf->num_tasks;
+
+    int permutable_count = 0;
+    int a_idx = 0;
+    for (int i=0; offsets[i]; i++) {
+        if (offsets[i] > 0) {
+            permutable_count++;
+
+            dst_task->a[a_idx] = offsets[i];
+            offsets[i] = a_idx+1;
+            a_idx++;
+        }
+    }
+
+    dst_task->n = permutable_count;
+    dst_task->i = 0;
+    dst_task->iters_done = 0;
+
+    memcpy(&dst_task->all_strs, all_strs, MAX_STR_LENGTH);
+    memcpy(&dst_task->offsets, offsets, MAX_OFFSETS_LENGTH);
+
+    memset(&dst_task->c, 0, 8);
 
     buf->num_tasks++;
 }
