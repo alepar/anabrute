@@ -75,6 +75,7 @@ tasks_buffer *create_and_fill_task_buffer() {
 
     task->i = 0;
     task->n = 8;
+    task->iters_done = 0;
 
     return buf;
 }
@@ -103,6 +104,7 @@ tasks_buffer *create_and_fill_task_buffer2() {
 
     task->i = 0;
     task->n = 8;
+    task->iters_done = 0;
 
     return buf;
 }
@@ -151,27 +153,31 @@ int main(int argc, char *argv[]) {
 
     for (int i=0; i<1; i++) {
         tasks_buffers_add_buffer(&tasks_bufs, create_and_fill_task_buffer());
-        sleep(1);
         tasks_buffers_add_buffer(&tasks_bufs, create_and_fill_task_buffer2());
-        sleep(1);
     }
     tasks_buffers_close(&tasks_bufs);
 
     err = pthread_join(gpu_thread, NULL);
     ret_iferr(err, "failed to join gpu thread");
 
-    const uint32_t *hashes_reversed = gpu_cruncher_ctx_read_hashes_reversed(&ctx, &errcode);
+    errcode = gpu_cruncher_ctx_read_hashes_reversed(&ctx);
     ret_iferr(errcode, "failed to read hashes_reversed");
 
     for(int i=0; i<hashes_num; i++) {
         char hash_ascii[33];
         hash_to_ascii(&hashes[i*4], hash_ascii);
-        printf("%s:  %s\n", hash_ascii, (char*)&hashes_reversed[i*MAX_STR_LENGTH/4]);
+        printf("%s:  %s\n", hash_ascii, (char*)(ctx.hashes_reversed + i*MAX_STR_LENGTH/4));
     }
 
     char strbuf[1024];
     format_bignum(ctx.consumed_anas, strbuf, 1000);
-    printf("consumed %d bufs, %sanas\n", ctx.consumed_bufs, strbuf);
+    printf("consumed %lu bufs, ~%sanas\n", ctx.consumed_bufs, strbuf);
+
+    float busy_percentage;
+    float anas_per_sec;
+    gpu_cruncher_get_stats(&ctx, &busy_percentage, &anas_per_sec);
+    format_bignum(anas_per_sec, strbuf, 1000);
+    printf("%sanas/sec, load %.1f\n", strbuf, busy_percentage);
 
     gpu_cruncher_ctx_free(&ctx);
 

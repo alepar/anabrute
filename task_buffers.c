@@ -6,6 +6,7 @@ tasks_buffer* tasks_buffer_allocate() {
 
     buffer->permut_tasks = calloc(PERMUT_TASKS_IN_KERNEL_TASK, sizeof(permut_task));
     buffer->num_tasks = 0;
+    buffer->num_anas = 0;
     return buffer;
 }
 

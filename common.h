@@ -34,7 +34,8 @@
 #define MAX_STR_LENGTH 40
 #define MAX_OFFSETS_LENGTH 16 // should always have 1 extra for 0-terminated
 
-
+#define TIMES_WINDOW_LENGTH 32
+#define REFRESH_INTERVAL_HASHES_REVERSED_MILLIS 1000
 
 #define ret_iferr(val, msg) \
 if (val) {\

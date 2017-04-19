@@ -4,6 +4,7 @@
 #include "gpu_cruncher.h"
 #include "hashes.h"
 #include "fact.h"
+#include "os.h"
 
 // private stuff
 
@@ -45,6 +46,12 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
 
     ctx->hashes = hashes;
     ctx->hashes_num = hashes_num;
+    ctx->last_refresh_hashes_reversed_millis = current_micros()/1000;
+
+    memset(ctx->task_times_starts, 0, TIMES_WINDOW_LENGTH*sizeof(uint64_t));
+    memset(ctx->task_times_ends, 0, TIMES_WINDOW_LENGTH*sizeof(uint64_t));
+    memset(ctx->task_calculated_anas, 0, TIMES_WINDOW_LENGTH*sizeof(uint64_t));
+    ctx->times_idx = 0;
 
     cl_int errcode;
     const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0, 0 };
@@ -86,12 +93,18 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
     return CL_SUCCESS;
 }
 
-const uint32_t* gpu_cruncher_ctx_read_hashes_reversed(gpu_cruncher_ctx *ctx, cl_int *errcode) {
-    *errcode = clEnqueueReadBuffer (ctx->queue, ctx->mem_hashes_reversed, CL_TRUE, 0, ctx->hashes_num * MAX_STR_LENGTH, ctx->hashes_reversed, 0, NULL, NULL);
-    if (*errcode) {
-        return NULL;
+cl_int gpu_cruncher_ctx_read_hashes_reversed(gpu_cruncher_ctx *ctx) {
+    return clEnqueueReadBuffer (ctx->queue, ctx->mem_hashes_reversed, CL_TRUE, 0, ctx->hashes_num * MAX_STR_LENGTH, ctx->hashes_reversed, 0, NULL, NULL);
+}
+
+cl_int gpu_cruncher_ctx_refresh_hashes_reversed(gpu_cruncher_ctx *ctx) {
+    uint64_t cur_millis = current_micros()/1000;
+    if (cur_millis - ctx->last_refresh_hashes_reversed_millis > REFRESH_INTERVAL_HASHES_REVERSED_MILLIS) {
+        ctx->last_refresh_hashes_reversed_millis = cur_millis;
+        return gpu_cruncher_ctx_read_hashes_reversed(ctx);
     }
-    return ctx->hashes_reversed;
+
+    return 0;
 }
 
 cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *ctx) {
@@ -107,6 +120,40 @@ cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *ctx) {
     errcode |= clReleaseContext(ctx->cl_ctx);
 
     return errcode;
+}
+
+void krnl_permut_record_stats(krnl_permut *krnl) {
+    gpu_cruncher_ctx *ctx = krnl->ctx;
+
+    ctx->consumed_anas += krnl->buf->num_anas;
+
+    ctx->task_times_starts[ctx->times_idx] = krnl->time_start_micros;
+    ctx->task_times_ends[ctx->times_idx] = krnl->time_end_micros;
+    ctx->task_calculated_anas[ctx->times_idx] = krnl->buf->num_anas;
+    ctx->times_idx = (ctx->times_idx+1) % TIMES_WINDOW_LENGTH;
+}
+
+void gpu_cruncher_get_stats(gpu_cruncher_ctx *ctx, float* busy_percentage, float* anas_per_sec) {
+    uint64_t calculated_anas=0;
+    uint64_t min_time_start = (uint64_t) -1L, max_time_ends=0;
+    uint64_t micros_in_kernel=0;
+
+    for (int i=0; i<TIMES_WINDOW_LENGTH; i++) {
+        if (ctx->task_times_starts[i] > 0) {
+            calculated_anas += ctx->task_calculated_anas[i];
+            micros_in_kernel += ctx->task_times_ends[i] - ctx->task_times_starts[i];
+
+            if (ctx->task_times_starts[i] < min_time_start) {
+                min_time_start = ctx->task_times_starts[i];
+            }
+            if (ctx->task_times_ends[i] > max_time_ends) {
+                max_time_ends = ctx->task_times_ends[i];
+            }
+        }
+    }
+
+    *busy_percentage = (float) micros_in_kernel / (max_time_ends-min_time_start);
+    *anas_per_sec = (float) (calculated_anas) / ((max_time_ends-min_time_start)/1000000.0f); // this is imprecise
 }
 
 void* run_gpu_cruncher_thread(void *ptr) {
@@ -138,7 +185,6 @@ void* run_gpu_cruncher_thread(void *ptr) {
                 if (dst_task->i >= dst_task->n) {
                     // task is finished
                     if (dst_task->n) {
-                        ctx->consumed_anas += fact(dst_task->n);
                         dst_task->n = 0;
                     }
 
@@ -147,15 +193,19 @@ void* run_gpu_cruncher_thread(void *ptr) {
                             if (dst_buf->num_tasks == 0 || tasks_buffers_num_ready(ctx->tasks_buffs)>0) {
                                 goto main;
                             } else {
-                                break; // seems like we're temporarily out of buffers, run what we have
+                                break; // seems like we're temporarily out of buffers, run what we have for now
                             }
                         }
 
                         memcpy(dst_task, src_buf->permut_tasks + src_idx++, sizeof(permut_task));
+                    } else {
+                        break; // permanently out of buffers
                     }
                 }
-                if (dst_buf->permut_tasks[i].i < dst_buf->permut_tasks[i].n) {
+                if (dst_task->i < dst_task->n) {
                     dst_buf->num_tasks = i+1;
+                    uint64_t iters_left = fact(dst_task->n) - dst_task->iters_done;
+                    dst_buf->num_anas += iters_left > MAX_ITERS_IN_KERNEL_TASK ? MAX_ITERS_IN_KERNEL_TASK : iters_left;
                 }
             }
 
@@ -178,9 +228,12 @@ void* run_gpu_cruncher_thread(void *ptr) {
             errcode = krnl_permut_read_tasks(&krnl, dst_buf);
             ret_iferr(errcode, "failed to read tasks out from gpu");
             dst_buf->num_tasks = 0;
+            dst_buf->num_anas = 0;
 
-            // TODO update progress
-            // TODO fetch hashes reversed
+            errcode = gpu_cruncher_ctx_refresh_hashes_reversed(ctx);
+            ret_iferr(errcode, "failed to refresh hashes_reversed");
+
+            // TODO drop code below
 /*
             const uint32_t *hashes_reversed = gpu_cruncher_ctx_read_hashes_reversed(ctx, &errcode);
             char hash_ascii[33];
@@ -227,7 +280,7 @@ cl_int krnl_permut_create(krnl_permut *krnl, gpu_cruncher_ctx *ctx, uint32_t ite
     krnl->mem_permut_tasks = clCreateBuffer(ctx->cl_ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, buf->num_tasks*sizeof(permut_task), buf->permut_tasks, &errcode);
     ret_iferr(errcode, "failed to create mem_permut_tasks");
 
-    krnl->tasks_in_last_buf = buf->num_tasks;
+    krnl->buf = buf;
 
 /*
     __kernel void permut(
@@ -247,12 +300,18 @@ cl_int krnl_permut_create(krnl_permut *krnl, gpu_cruncher_ctx *ctx, uint32_t ite
 }
 
 cl_int krnl_permut_enqueue(krnl_permut *krnl) {
-    size_t globalWorkSize[] = {krnl->tasks_in_last_buf, 0, 0};
+    size_t globalWorkSize[] = {krnl->buf->num_tasks, 0, 0};
+    krnl->time_start_micros = current_micros();
     return clEnqueueNDRangeKernel(krnl->ctx->queue, krnl->kernel, 1, NULL, globalWorkSize, NULL, 0, NULL, &krnl->event);
 }
 
 cl_int krnl_permut_wait(krnl_permut *krnl) {
-    return clWaitForEvents(1, &krnl->event);
+    cl_int errcode = clWaitForEvents(1, &krnl->event);
+    krnl->time_end_micros = current_micros();
+
+    krnl_permut_record_stats(krnl);
+
+    return errcode;
 }
 
 cl_int krnl_permut_free(krnl_permut *krnl) {
@@ -265,10 +324,10 @@ cl_int krnl_permut_free(krnl_permut *krnl) {
 cl_int krnl_permut_read_tasks(krnl_permut *krnl, tasks_buffer* buf) {
     int errcode;
 
-    errcode = clEnqueueReadBuffer (krnl->ctx->queue, krnl->mem_permut_tasks, CL_TRUE, 0, krnl->tasks_in_last_buf * sizeof(permut_task), buf->permut_tasks, 0, NULL, NULL);
+    errcode = clEnqueueReadBuffer (krnl->ctx->queue, krnl->mem_permut_tasks, CL_TRUE, 0, krnl->buf->num_tasks * sizeof(permut_task), buf->permut_tasks, 0, NULL, NULL);
     ret_iferr(errcode, "failed to read permut_tasks from gpu");
 
-    buf->num_tasks = krnl->tasks_in_last_buf;
+    buf->num_tasks = krnl->buf->num_tasks;
 
     return errcode;
 }

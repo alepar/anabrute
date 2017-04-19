@@ -138,8 +138,9 @@ typedef struct permut_task_s {
     char offsets[MAX_OFFSETS_LENGTH];
     uchar a[MAX_OFFSETS_LENGTH];
     uchar c[MAX_OFFSETS_LENGTH];
-    uint i;
-    uint n;
+    ushort i;
+    ushort n;
+    uint iters_done;
 } permut_task;
 
 ulong fact(uchar x) {
@@ -262,8 +263,10 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
         }
 
         // no permutations left, exiting
-        iter_counter = iters_per_task+1;
+        break;
     }
+
+    task.iters_done += iter_counter;
 
     // write out state (to resume or signal completion)
     // skip offsets and all_strs, as those never change

@@ -8,13 +8,15 @@ typedef struct permut_task_s {
     int8_t offsets[MAX_OFFSETS_LENGTH];  // positives - permutable all_strs+(a[offset-1]-1), negatives - fixed all_strs+(-offset-1), zeroes - end terminators;
     uint8_t a[MAX_OFFSETS_LENGTH];
     uint8_t c[MAX_OFFSETS_LENGTH];
-    uint32_t i;     // 32_t to align structure to longs
-    uint32_t n;
+    uint16_t i;     // 32_t to align structure to longs
+    uint16_t n;
+    uint32_t iters_done;
 } permut_task;
 
 typedef struct tasks_buffer_s {
     permut_task *permut_tasks;
     uint32_t num_tasks;
+    uint64_t num_anas;
 } tasks_buffer;
 
 tasks_buffer* tasks_buffer_allocate();
