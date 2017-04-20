@@ -29,4 +29,6 @@ void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_i
                              char_counts* seed_phrase, char_counts_strings* (*dict_by_char)[CHARCOUNT][MAX_DICT_SIZE], int* dict_by_char_len,
                              tasks_buffers* tasks_buffs);
 
+void* run_cpu_cruncher_thread(void *ptr);
+
 #endif //ANABRUTE_CRUNCHER_TYPES_H
