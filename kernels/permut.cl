@@ -177,7 +177,7 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
 
     // reading as uints for speec
     for (uchar i=0; i<sizeof(permut_task)/4; i++) {
-        *(((uint*)&task)+i) = *(((uint*)(tasks+id))+i);
+        *(((uint*)&task)+i) = *(((__global uint*)(tasks+id))+i);
     }
 
     if (task.i >= task.n) { // this task is already completed
@@ -271,7 +271,7 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
     // write out state (to resume or signal completion)
     // skip offsets and all_strs, as those never change
     for (uchar i=MAX_STR_LENGTH/4+MAX_OFFSETS_LENGTH/4; i<sizeof(permut_task)/4; i++) {
-        *(((uint*)(tasks+id))+i) = *(((uint*)&task)+i);
+        *(((__global uint*)(tasks+id))+i) = *(((uint*)&task)+i);
     }
 
 }

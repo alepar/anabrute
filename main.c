@@ -323,6 +323,7 @@ void* run_cpu_cruncher_thread(void *ptr) {
         errcode = tasks_buffers_add_buffer(ctx->tasks_buffs, ctx->local_buffer);
         ctx->progress_l0_index = ctx->dict_by_char_len[0]; // mark this cpu cruncher as done
         ret_iferr(errcode, "cpu cruncher failed to pass last buffer to gpu crunchers");
+        // TODO try-catch
         ctx->local_buffer = NULL;
     }
 
@@ -433,6 +434,8 @@ int main(int argc, char *argv[]) {
 
     // === create and start cruncher threads
 
+    printf("searching through anas up to %d words\n", MAX_WORD_LENGTH);
+
     struct timeval t0;
     gettimeofday(&t0, 0);
 
@@ -450,8 +453,23 @@ int main(int argc, char *argv[]) {
 
     // === monitor and display progress
 
+    bool hash_is_reversed[hashes_num]; memset(hash_is_reversed, 0, sizeof(bool)*hashes_num);
+    char strbuf[1024];
     while (1) {
         sleep(1);
+
+        // print out new hashes as we go
+        for (int hi=0; hi<hashes_num; hi++) {
+            if (!hash_is_reversed[hi]) {
+                for (int gi = 0; gi < num_gpu_crunchers; gi++) {
+                    if (gpu_cruncher_ctxs[gi].hashes_reversed[hi*MAX_STR_LENGTH/4]) {
+                        hash_to_ascii(hashes+hi*4, strbuf);
+                        printf("%s:  %s\n", strbuf, (char*)(gpu_cruncher_ctxs[gi].hashes_reversed) + hi*MAX_STR_LENGTH);
+                        hash_is_reversed[hi] = true;
+                    }
+                }
+            }
+        }
 
         int min=dict_by_char_len[0], max=0;
         for (int i=0; i<num_cpu_crunchers; i++) {
@@ -460,13 +478,19 @@ int main(int argc, char *argv[]) {
             if (progress < min) min = progress;
         }
 
+        float busy_percentage, overall_busy_percentage=0;
+        float anas_per_sec, overall_anas_per_sec=0;
         uint32_t buffs_gpus_consumed = 0;
         for (int i=0; i<num_gpu_crunchers; i++) {
             buffs_gpus_consumed += gpu_cruncher_ctxs[i].consumed_bufs;
+            gpu_cruncher_get_stats(gpu_cruncher_ctxs+i, &busy_percentage, &anas_per_sec);
+            overall_busy_percentage += busy_percentage;
+            overall_anas_per_sec += anas_per_sec;
         }
-        // TODO print out new hashes as we go
-        // TODO display utilization, hashing speed
-        printf("\r%d cpus: %d-%d/%d | %d buffs | %d gpus | %d buffs done\r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, buffs_gpus_consumed);
+        overall_busy_percentage /= num_gpu_crunchers;
+        format_bignum(overall_anas_per_sec, strbuf, 1000);
+
+        printf("%d cpus: %d-%d/%d | %d buffs | %d gpus, %sAna/s, %.lf%% effic | %d buffs done\r", num_cpu_crunchers, min, max, dict_by_char_len[0], tasks_buffs.num_ready, num_gpu_crunchers, strbuf, overall_busy_percentage, buffs_gpus_consumed);
         fflush(stdout);
 
         if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) {
@@ -495,8 +519,7 @@ int main(int argc, char *argv[]) {
         ret_iferr(err, "failed to join gpu thread");
     }
 
-    // TODO handle exit codes
-
+    // TODO force hashes_reversed refresh
     // TODO free gpu_cruncher_ctx
 
     long elapsed_millis = (t1.tv_sec-t0.tv_sec)*1000 + (t1.tv_usec-t0.tv_usec)/1000;

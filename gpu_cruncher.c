@@ -84,10 +84,11 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
 
     ctx->hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
     ret_iferr(!ctx->hashes_reversed, "failed to malloc hashes_reversed");
+    memset(ctx->hashes_reversed, 0, hashes_num * MAX_STR_LENGTH);
 
     ctx->mem_hashes = clCreateBuffer(ctx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num*16, hashes, &errcode);
     ret_iferr(errcode, "failed to create mem_hashes");
-    ctx->mem_hashes_reversed = clCreateBuffer(ctx->cl_ctx, CL_MEM_WRITE_ONLY, hashes_num * MAX_STR_LENGTH, NULL, &errcode);
+    ctx->mem_hashes_reversed = clCreateBuffer(ctx->cl_ctx, CL_MEM_WRITE_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num * MAX_STR_LENGTH, ctx->hashes_reversed, &errcode);
     ret_iferr(errcode, "failed to create mem_hashes_reversed");
 
     return CL_SUCCESS;
@@ -152,7 +153,7 @@ void gpu_cruncher_get_stats(gpu_cruncher_ctx *ctx, float* busy_percentage, float
         }
     }
 
-    *busy_percentage = (float) micros_in_kernel / (max_time_ends-min_time_start);
+    *busy_percentage = (float) micros_in_kernel / (max_time_ends-min_time_start) * 100.0f;
     *anas_per_sec = (float) (calculated_anas) / ((max_time_ends-min_time_start)/1000000.0f); // this is imprecise
 }
 
@@ -163,7 +164,7 @@ void* run_gpu_cruncher_thread(void *ptr) {
 
     tasks_buffer* src_buf;
     errcode = tasks_buffers_get_buffer(ctx->tasks_buffs, &src_buf);
-    ret_iferr(errcode, "failed to get first buffer");
+    ret_iferr(errcode, "failed to get first buffer"); // TODO try-catch
     uint32_t src_idx = 0;
 
     tasks_buffer* dst_buf = tasks_buffer_allocate();
