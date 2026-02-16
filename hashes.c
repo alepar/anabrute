@@ -27,6 +27,45 @@ void hash_to_ascii(const uint32_t *hash, char *buf) {
     buf[di] = 0;
 }
 
+uint32_t read_hashes(const char *file_name, uint32_t **hashes) {
+    FILE *const fd = fopen(file_name, "r");
+    if (!fd) {
+        return 0;
+    }
+
+    fseek(fd, 0L, SEEK_END);
+    const uint32_t file_size = (const uint32_t) ftell(fd);
+    rewind(fd);
+
+    const uint32_t hashes_num_est = (file_size + 1) / 33;
+    uint32_t hashes_num = 0;
+
+    *hashes = malloc(hashes_num_est*16);
+
+    char buf[128];
+    while(fgets(buf, sizeof(buf), fd) != NULL) {
+        for (int i=0; i<sizeof(buf); i++) {
+            if (buf[i] == '\n' || buf[i] == '\r') {
+                buf[i] = 0;
+            }
+        }
+        if (strlen(buf) != 32) {
+            fprintf(stderr, "not a hash! (%s)\n", buf);
+        }
+
+        if (hashes_num>hashes_num_est) {
+            fprintf(stderr, "too many hashes? skipping tail...\n");
+            break;
+        }
+
+        ascii_to_hash(buf, &((*hashes)[hashes_num*4]));
+        hashes_num++;
+    }
+
+    fclose(fd);
+    return hashes_num;
+}
+
 void ascii_to_hash(const char *buf, uint32_t *hash) {
     char *hash_bytes = (char *)hash;
     for (int i=0; i<16; i++) {

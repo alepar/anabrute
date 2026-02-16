@@ -1,7 +1,15 @@
-cmake_minimum_required (VERSION 3.1)
+cmake_minimum_required (VERSION 3.5)
 project(anabrute)
 
 find_package(OpenCL REQUIRED)
+
+# homebrew includes (event.h, unitypes.h on macOS)
+if(APPLE AND EXISTS "/opt/homebrew/include")
+    include_directories("/opt/homebrew/include")
+endif()
+
+# suppress int-to-pointer warnings from ret_iferr macro in void* functions (known bug)
+add_compile_options(-Wno-int-conversion)
 
 add_executable (anabrute main.c gpu_cruncher.c hashes.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
 set_property(TARGET anabrute PROPERTY C_STANDARD 99)
