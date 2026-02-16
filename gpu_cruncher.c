@@ -40,6 +40,8 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
 
     ctx->tasks_buffs = tasks_buffs;
 
+    ctx->cfg = NULL;
+
     ctx->is_running = true;
     ctx->consumed_bufs = 0;
     ctx->consumed_anas = 0L;
@@ -82,20 +84,38 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
     ctx->queue = clCreateCommandQueue(ctx->cl_ctx, ctx->device_id, NULL, &errcode);
     ret_iferr(errcode, "failed to create queue");
 
-    ctx->hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
-    ret_iferr(!ctx->hashes_reversed, "failed to malloc hashes_reversed");
-    memset(ctx->hashes_reversed, 0, hashes_num * MAX_STR_LENGTH);
+    ctx->local_hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
+    ret_iferr(!ctx->local_hashes_reversed, "failed to malloc local_hashes_reversed");
+    memset(ctx->local_hashes_reversed, 0, hashes_num * MAX_STR_LENGTH);
+    ctx->hashes_reversed = ctx->local_hashes_reversed;  // default for kernel_debug
 
     ctx->mem_hashes = clCreateBuffer(ctx->cl_ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num*16, hashes, &errcode);
     ret_iferr(errcode, "failed to create mem_hashes");
-    ctx->mem_hashes_reversed = clCreateBuffer(ctx->cl_ctx, CL_MEM_WRITE_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num * MAX_STR_LENGTH, ctx->hashes_reversed, &errcode);
+    ctx->mem_hashes_reversed = clCreateBuffer(ctx->cl_ctx, CL_MEM_WRITE_ONLY | CL_MEM_COPY_HOST_PTR, hashes_num * MAX_STR_LENGTH, ctx->local_hashes_reversed, &errcode);
     ret_iferr(errcode, "failed to create mem_hashes_reversed");
 
     return CL_SUCCESS;
 }
 
 cl_int gpu_cruncher_ctx_read_hashes_reversed(gpu_cruncher_ctx *ctx) {
-    return clEnqueueReadBuffer (ctx->queue, ctx->mem_hashes_reversed, CL_TRUE, 0, ctx->hashes_num * MAX_STR_LENGTH, ctx->hashes_reversed, 0, NULL, NULL);
+    cl_int err = clEnqueueReadBuffer(ctx->queue, ctx->mem_hashes_reversed, CL_TRUE, 0,
+        ctx->hashes_num * MAX_STR_LENGTH, ctx->local_hashes_reversed, 0, NULL, NULL);
+    if (err != CL_SUCCESS) return err;
+
+    // Merge to shared buffer. No lock needed: each slot is written only with
+    // the correct match data, so concurrent writes from multiple backends are
+    // idempotent. The reader (main thread) may see a partial write briefly,
+    // which is harmless for display purposes.
+    if (ctx->cfg) {
+        for (uint32_t i = 0; i < ctx->hashes_num; i++) {
+            if (ctx->local_hashes_reversed[i * MAX_STR_LENGTH / 4]) {
+                memcpy(ctx->cfg->hashes_reversed + i * MAX_STR_LENGTH / 4,
+                       ctx->local_hashes_reversed + i * MAX_STR_LENGTH / 4,
+                       MAX_STR_LENGTH);
+            }
+        }
+    }
+    return CL_SUCCESS;
 }
 
 cl_int gpu_cruncher_ctx_refresh_hashes_reversed(gpu_cruncher_ctx *ctx) {
@@ -109,8 +129,10 @@ cl_int gpu_cruncher_ctx_refresh_hashes_reversed(gpu_cruncher_ctx *ctx) {
 }
 
 cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *ctx) {
-    if (ctx->hashes_reversed) {
-        free(ctx->hashes_reversed);
+    if (ctx->local_hashes_reversed) {
+        free(ctx->local_hashes_reversed);
+        ctx->local_hashes_reversed = NULL;
+        ctx->hashes_reversed = NULL;
     }
 
     cl_int errcode = CL_SUCCESS;
@@ -264,6 +286,7 @@ void* run_gpu_cruncher_thread(void *ptr) {
         }
     }
 
+    gpu_cruncher_ctx_read_hashes_reversed(ctx);
     ctx->is_running = false;
     return NULL;
 }

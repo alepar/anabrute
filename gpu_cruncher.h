@@ -2,6 +2,7 @@
 #define GPU_CRUNCHER_H
 
 #include "common.h"
+#include "cruncher.h"
 #include "permut_types.h"
 #include "task_buffers.h"
 
@@ -22,8 +23,12 @@ typedef struct gpu_cruncher_ctx_s {
     // input queue
     tasks_buffers *tasks_buffs;
 
+    // cruncher abstraction (NULL when used directly by kernel_debug)
+    cruncher_config *cfg;
+
     // job output
-    uint32_t *hashes_reversed;      // managed internally
+    uint32_t *hashes_reversed;      // points to local_hashes_reversed (kernel_debug) or cfg->hashes_reversed (cruncher)
+    uint32_t *local_hashes_reversed; // temp buffer for GPU readback
     cl_mem mem_hashes_reversed;
 
     // progress
