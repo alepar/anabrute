@@ -1,4 +1,5 @@
 #include "os.h"
+#include <sys/resource.h>
 
 uint32_t num_cpu_cores() {
     // posix-way
@@ -9,4 +10,8 @@ uint64_t current_micros() {
     struct timeval t;
     gettimeofday(&t, 0);
     return (uint64_t) t.tv_sec*1000000L + t.tv_usec;
+}
+
+void set_thread_high_priority(void) {
+    setpriority(PRIO_PROCESS, 0, -5);
 }

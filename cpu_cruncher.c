@@ -1,4 +1,5 @@
 #include "cpu_cruncher.h"
+#include "os.h"
 
 void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_id, uint32_t num_cpu_crunchers,
                              char_counts* seed_phrase, char_counts_strings* (*dict_by_char)[CHARCOUNT][MAX_DICT_SIZE], int* dict_by_char_len,
@@ -219,6 +220,7 @@ int recurse_dict_words(cpu_cruncher_ctx* ctx, char_counts *remainder, int curcha
 
 void* run_cpu_cruncher_thread(void *ptr) {
     cpu_cruncher_ctx *ctx = ptr;
+    set_thread_high_priority();
 
     char_counts local_remainder;
     char_counts_copy(ctx->seed_phrase, &local_remainder);

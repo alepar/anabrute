@@ -1,8 +1,9 @@
 #include "common.h"
 #include "cpu_cruncher.h"
+#include "cruncher.h"
+#include "opencl_cruncher.h"
 #include "dict.h"
 #include "fact.h"
-#include "gpu_cruncher.h"
 #include "hashes.h"
 #include "os.h"
 #include "permut_types.h"
@@ -42,71 +43,64 @@ int main(int argc, char *argv[]) {
     }
     // maybe resort dict_by_char? by length or char occurs?
 
-    // setup shared cpu/gpu cruncher studf
+    // === setup shared cpu/gpu cruncher stuff
 
     tasks_buffers tasks_buffs;
     tasks_buffers_create(&tasks_buffs);
-
-    // === setup opencl / gpu cruncher contexts
-
-    cl_platform_id platform_id;
-    cl_uint num_platforms;
-    clGetPlatformIDs (1, &platform_id, &num_platforms);
-    ret_iferr(!num_platforms, "no platforms");
-
-    cl_uint num_gpu_crunchers;
-    clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, 0, NULL, &num_gpu_crunchers);
-    cl_device_id device_ids[num_gpu_crunchers];
-    clGetDeviceIDs (platform_id, CL_DEVICE_TYPE_ALL, num_gpu_crunchers, device_ids, &num_gpu_crunchers);
-    ret_iferr(!num_gpu_crunchers, "no devices");
-
-    uint32_t num_gpus = 0;
-    for (int i=0; i<num_gpu_crunchers; i++) {
-        cl_device_type dev_type;
-        clGetDeviceInfo (device_ids[i], CL_DEVICE_TYPE, sizeof(dev_type), &dev_type, NULL);
-        if (dev_type > CL_DEVICE_TYPE_CPU) {
-            num_gpus++;
-        }
-    }
-
-    if (num_gpus) {
-        int d=0;
-        for (int s=0; s<num_gpu_crunchers; s++) {
-            cl_device_type dev_type;
-            clGetDeviceInfo (device_ids[s], CL_DEVICE_TYPE, sizeof(dev_type), &dev_type, NULL);
-            if (dev_type > CL_DEVICE_TYPE_CPU) {
-                device_ids[d++] = device_ids[s];
-            }
-        }
-        num_gpu_crunchers = num_gpus;
-    }
-
-    char char_buf[1024];
-    for (int i=0; i<num_gpu_crunchers; i++) {
-        cl_ulong local_mem; char local_mem_str[32];
-        cl_ulong global_mem; char global_mem_str[32];
-
-        clGetDeviceInfo(device_ids[i], CL_DEVICE_GLOBAL_MEM_SIZE, 8, &global_mem, NULL);
-        clGetDeviceInfo(device_ids[i], CL_DEVICE_LOCAL_MEM_SIZE, 8, &local_mem, NULL);
-        clGetDeviceInfo (device_ids[i], CL_DEVICE_NAME, 1024, char_buf, NULL);
-
-        format_bignum(global_mem, global_mem_str, 1024);
-        format_bignum(local_mem, local_mem_str, 1024);
-        printf("OpenCL device #%d: %s (g:%siB l:%siB)\n", i+1, char_buf, global_mem_str, local_mem_str);
-    }
-    printf("\n");
 
     uint32_t *hashes;
     const uint32_t hashes_num = read_hashes("input.hashes", &hashes);
     ret_iferr(!hashes_num, "failed to read hashes");
     ret_iferr(!hashes, "failed to allocate hashes");
 
-    cl_int errcode;
-    gpu_cruncher_ctx gpu_cruncher_ctxs[num_gpu_crunchers];
-    for (uint32_t i=0; i<num_gpu_crunchers; i++) {
-        errcode = gpu_cruncher_ctx_create(gpu_cruncher_ctxs+i, platform_id, device_ids[i], &tasks_buffs, hashes, hashes_num);
-        ret_iferr(errcode, "failed to create gpu_cruncher_ctx");
+    // === probe and create crunchers ===
+
+    cruncher_ops *all_backends[] = {
+        &opencl_cruncher_ops,
+        // Future: &avx_cruncher_ops,
+        // Future: &metal_cruncher_ops,
+        NULL
+    };
+
+    // Shared output buffer
+    uint32_t *hashes_reversed = calloc(hashes_num, MAX_STR_LENGTH);
+    ret_iferr(!hashes_reversed, "failed to allocate hashes_reversed");
+
+    cruncher_config cruncher_cfg = {
+        .tasks_buffs = &tasks_buffs,
+        .hashes = hashes,
+        .hashes_num = hashes_num,
+        .hashes_reversed = hashes_reversed,
+    };
+
+    #define MAX_CRUNCHER_INSTANCES 64
+    typedef struct {
+        cruncher_ops *ops;
+        void *ctx;
+        pthread_t thread;
+    } cruncher_instance;
+
+    cruncher_instance crunchers[MAX_CRUNCHER_INSTANCES];
+    uint32_t num_crunchers = 0;
+
+    printf("Probing cruncher backends:\n");
+    for (int bi = 0; all_backends[bi]; bi++) {
+        cruncher_ops *ops = all_backends[bi];
+        uint32_t count = ops->probe();
+        if (!count) continue;
+
+        printf("  %s: %d instance(s)\n", ops->name, count);
+
+        for (uint32_t i = 0; i < count && num_crunchers < MAX_CRUNCHER_INSTANCES; i++) {
+            cruncher_instance *ci = &crunchers[num_crunchers];
+            ci->ops = ops;
+            ci->ctx = calloc(1, ops->ctx_size);
+            int err = ops->create(ci->ctx, &cruncher_cfg, i);
+            ret_iferr(err, "failed to create cruncher instance");
+            num_crunchers++;
+        }
     }
+    printf("%d cruncher instance(s) total\n\n", num_crunchers);
 
     // === create cpu cruncher contexts
 
@@ -123,50 +117,44 @@ int main(int argc, char *argv[]) {
     struct timeval t0, t1;
     gettimeofday(&t0, 0);
 
+    // Start CPU (dict enumeration) threads — priority set inside run_cpu_cruncher_thread
     pthread_t cpu_threads[num_cpu_crunchers];
     for (int i=0; i<num_cpu_crunchers; i++) {
         int err = pthread_create(cpu_threads+i, NULL, run_cpu_cruncher_thread, cpu_cruncher_ctxs+i);
         ret_iferr(err, "failed to create cpu thread");
     }
 
-    pthread_t gpu_threads[num_gpu_crunchers];
-    for (int i=0; i<num_gpu_crunchers; i++) {
-        int err = pthread_create(gpu_threads+i, NULL, run_gpu_cruncher_thread, gpu_cruncher_ctxs+i);
-        ret_iferr(err, "failed to create gpu thread");
+    // Start cruncher threads
+    for (uint32_t i = 0; i < num_crunchers; i++) {
+        int err = pthread_create(&crunchers[i].thread, NULL, crunchers[i].ops->run, crunchers[i].ctx);
+        ret_iferr(err, "failed to create cruncher thread");
     }
 
     // === monitor and display progress
 
-    bool hash_is_reversed[hashes_num]; memset(hash_is_reversed, 0, sizeof(bool)*hashes_num);
-    char strbuf[1024], strbuf2[1024];
+    bool hash_is_printed[hashes_num];
+    memset(hash_is_printed, 0, sizeof(bool) * hashes_num);
+    char strbuf[1024];
+
     while (1) {
         sleep(1);
 
-        bool gpu_is_running = false;
-        for (int i=0; i<num_gpu_crunchers; i++) {
-            gpu_is_running |= gpu_cruncher_ctxs[i].is_running;
+        // Check if any cruncher still running
+        bool any_running = false;
+        for (uint32_t i = 0; i < num_crunchers; i++) {
+            any_running |= crunchers[i].ops->is_running(crunchers[i].ctx);
         }
 
-        if (!gpu_is_running) {
-            // force last hashes refresh
-            for (int gi = 0; gi < num_gpu_crunchers; gi++) {
-                gpu_cruncher_ctx_read_hashes_reversed(gpu_cruncher_ctxs+gi);
+        // Print newly found hashes from shared buffer
+        for (int hi = 0; hi < hashes_num; hi++) {
+            if (!hash_is_printed[hi] && hashes_reversed[hi * MAX_STR_LENGTH / 4]) {
+                hash_to_ascii(hashes + hi * 4, strbuf);
+                printf("%s:  %s\n", strbuf, (char *)(hashes_reversed + hi * MAX_STR_LENGTH / 4));
+                hash_is_printed[hi] = true;
             }
         }
 
-        // print out new hashes as we go
-        for (int hi=0; hi<hashes_num; hi++) {
-            if (!hash_is_reversed[hi]) {
-                for (int gi = 0; gi < num_gpu_crunchers; gi++) {
-                    if (gpu_cruncher_ctxs[gi].hashes_reversed[hi*MAX_STR_LENGTH/4]) {
-                        hash_to_ascii(hashes+hi*4, strbuf);
-                        printf("%s:  %s\n", strbuf, (char*)(gpu_cruncher_ctxs[gi].hashes_reversed) + hi*MAX_STR_LENGTH);
-                        hash_is_reversed[hi] = true;
-                    }
-                }
-            }
-        }
-
+        // CPU progress
         int min=dict_by_char_len[0], max=0;
         for (int i=0; i<num_cpu_crunchers; i++) {
             const int progress = cpu_cruncher_ctxs[i].progress_l0_index;
@@ -174,54 +162,55 @@ int main(int argc, char *argv[]) {
             if (progress < min) min = progress;
         }
 
-        float busy_percentage, overall_busy_percentage=0;
-        float anas_per_sec, overall_anas_per_sec=0;
-        uint32_t buffs_gpus_consumed = 0;
-        uint64_t overall_anas_consumed = 0;
-        for (int i=0; i<num_gpu_crunchers; i++) {
-            buffs_gpus_consumed += gpu_cruncher_ctxs[i].consumed_bufs;
-            gpu_cruncher_get_stats(gpu_cruncher_ctxs+i, &busy_percentage, &anas_per_sec);
-            overall_busy_percentage += busy_percentage;
-            overall_anas_per_sec += anas_per_sec;
-            overall_anas_consumed += gpu_cruncher_ctxs[i].consumed_anas;
+        // Aggregate stats from all crunchers
+        float overall_busy = 0, overall_anas_per_sec = 0;
+        for (uint32_t i = 0; i < num_crunchers; i++) {
+            float busy, aps;
+            crunchers[i].ops->get_stats(crunchers[i].ctx, &busy, &aps);
+            overall_busy += busy;
+            overall_anas_per_sec += aps;
         }
-        overall_busy_percentage /= num_gpu_crunchers;
+        if (num_crunchers > 0) overall_busy /= num_crunchers;
         format_bignum(overall_anas_per_sec, strbuf, 1000);
 
         gettimeofday(&t1, 0);
         long elapsed_secs = t1.tv_sec-t0.tv_sec;
 
-        format_bignum(overall_anas_consumed, strbuf2, 1000);
-
-        printf("%02dh:%02dm:%02ds | %d cpus: %d-%d/%d | %d buffs | %d gpus, %sAna/s, %.lf%% effic | %d buffs, %s anas done\r",
+        printf("%02ld:%02ld:%02ld | %d cpus: %d-%d/%d | %d buffs | %d crunchers, %sAna/s, %.0f%% effic\r",
                elapsed_secs/3600, (elapsed_secs/60)%60, elapsed_secs%60,
                num_cpu_crunchers, min, max, dict_by_char_len[0],
                tasks_buffs.num_ready,
-               num_gpu_crunchers, strbuf, overall_busy_percentage,
-               buffs_gpus_consumed, strbuf2);
+               num_crunchers, strbuf, overall_busy);
         fflush(stdout);
 
-        // if cpu's are done - send poison pill to gpus
+        // if cpu's are done - send poison pill to crunchers
         if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) {
             tasks_buffers_close(&tasks_buffs);
         }
 
-        if (!gpu_is_running) {
+        if (!any_running) {
+            // Final hash scan — crunchers merge results before setting is_running=false,
+            // so the shared buffer is up to date by the time we get here
+            for (int hi = 0; hi < hashes_num; hi++) {
+                if (!hash_is_printed[hi] && hashes_reversed[hi * MAX_STR_LENGTH / 4]) {
+                    hash_to_ascii(hashes + hi * 4, strbuf);
+                    printf("%s:  %s\n", strbuf, (char *)(hashes_reversed + hi * MAX_STR_LENGTH / 4));
+                    hash_is_printed[hi] = true;
+                }
+            }
             printf("\n");
             break;
         }
     }
 
+    // === cleanup
     for (uint32_t i=0; i<num_cpu_crunchers; i++) {
-        int err = pthread_join(cpu_threads[i], NULL);
-        ret_iferr(err, "failed to join cpu thread");
+        pthread_join(cpu_threads[i], NULL);
     }
-    for (uint32_t i=0; i<num_gpu_crunchers; i++) {
-        int err = pthread_join(gpu_threads[i], NULL);
-        ret_iferr(err, "failed to join gpu thread");
+    for (uint32_t i = 0; i < num_crunchers; i++) {
+        pthread_join(crunchers[i].thread, NULL);
+        crunchers[i].ops->destroy(crunchers[i].ctx);
+        free(crunchers[i].ctx);
     }
-    for (uint32_t i=0; i<num_gpu_crunchers; i++) {
-        cl_int err = gpu_cruncher_ctx_free(gpu_cruncher_ctxs+i);
-        ret_iferr(err, "failed to free gpu cruncher ctx");
-    }
+    free(hashes_reversed);
 }
