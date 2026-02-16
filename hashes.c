@@ -51,9 +51,10 @@ uint32_t read_hashes(const char *file_name, uint32_t **hashes) {
         }
         if (strlen(buf) != 32) {
             fprintf(stderr, "not a hash! (%s)\n", buf);
+            continue;
         }
 
-        if (hashes_num>hashes_num_est) {
+        if (hashes_num>=hashes_num_est) {
             fprintf(stderr, "too many hashes? skipping tail...\n");
             break;
         }
