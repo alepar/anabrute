@@ -113,7 +113,8 @@ int recurse_string_combs(cpu_cruncher_ctx* ctx, stack_item *stack, int stack_len
         }
 
         uint8_t word_count = 0;
-        char all_strs[strs_count];
+        char all_strs[MAX_STR_LENGTH];
+        memset(all_strs, 0, MAX_STR_LENGTH);
         int8_t all_offs=0;
         int sics_len=0;
         for (int i=0; i<scs_idx; i++) {
@@ -128,8 +129,8 @@ int recurse_string_combs(cpu_cruncher_ctx* ctx, stack_item *stack, int stack_len
             }
         }
 
-        int8_t permut[word_count];
-        memset(permut, 0, word_count);
+        int8_t permut[MAX_OFFSETS_LENGTH];
+        memset(permut, 0, MAX_OFFSETS_LENGTH);
         return recurse_combs(ctx, all_strs, sics, sics_len, 0, permut, word_count, 0);
     } else if (stack[stack_idx].ccs->strings_len > string_idx+1) {
         const uint8_t orig_count = stack[stack_idx].count;
@@ -177,7 +178,7 @@ int recurse_dict_words(cpu_cruncher_ctx* ctx, char_counts *remainder, int curcha
         return recurse_string_combs(ctx, stack, stack_len, 0, 0, scs, 0);
     }
 
-    for (;curchar<CHARCOUNT & !remainder->counts[curchar]; curchar++)
+    for (;curchar<CHARCOUNT && !remainder->counts[curchar]; curchar++)
         if(curchar >= CHARCOUNT) {
             return 0;
         }
