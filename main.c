@@ -1,64 +1,11 @@
 #include "common.h"
 #include "cpu_cruncher.h"
+#include "dict.h"
 #include "fact.h"
 #include "gpu_cruncher.h"
 #include "hashes.h"
 #include "os.h"
 #include "permut_types.h"
-
-int read_dict(char_counts_strings *dict, uint32_t *dict_length, char_counts *seed_phrase) {
-    FILE *dictFile = fopen("input.dict", "r");
-    if (!dictFile) {
-        fprintf(stderr, "dict file not found!\n");
-        return -1;
-    }
-
-    char buf1[100] = {0}, buf2[100] = {0};
-    char *buflines[] = {buf1, buf2};
-    int lineidx = 0;
-
-    while(fgets(buflines[lineidx], 100, dictFile) != NULL) {
-        char *const str = buflines[lineidx];
-        const size_t len = strlen(str);
-        if (str[len-1] == '\n' || str[len-1] == '\r') {
-            str[len-1] = 0;
-        }
-        if (str[len-2] == '\n' || str[len-2] == '\r') {
-            str[len-2] = 0;
-        }
-
-        if (strcmp(buflines[0], buflines[1])) {
-            lineidx = 1-lineidx;
-            if (char_counts_strings_create(str, &dict[*dict_length])) {
-                continue;
-            }
-
-            if (char_counts_contains(seed_phrase, &dict[*dict_length].counts)) {
-                int i;
-
-                for (i=0; i<*dict_length; i++) {
-                    if (char_counts_equal(&dict[i].counts, &dict[*dict_length].counts)) {
-                        break;
-                    }
-                }
-                if (i==*dict_length) {
-                    (*dict_length)++;
-                    if (*dict_length > MAX_DICT_SIZE) {
-                        fprintf(stderr, "dict overflow! %d\n", *dict_length);
-                        return -2;
-                    }
-                }
-
-                if (char_counts_strings_addstring(&dict[i], str)) {
-                    fprintf(stderr, "strings overflow! %d", dict[i].strings_len);
-                    return -3;
-                }
-            }
-        }
-    }
-    fclose(dictFile);
-    return 0;
-}
 
 static const char* size_suffixes[] = {"", "K", "M", "G", "T", "P"};
 void format_bignum(uint64_t value, char *dst, uint16_t div) {
@@ -83,7 +30,7 @@ int main(int argc, char *argv[]) {
     char_counts_strings dict[MAX_DICT_SIZE];
     uint32_t dict_length = 0;
 
-    read_dict(dict, &dict_length, &seed_phrase);
+    read_dict("input.dict", dict, &dict_length, &seed_phrase);
 
     for (int i=0; i<dict_length; i++) {
         for (int ci=0; ci<CHARCOUNT; ci++) {
