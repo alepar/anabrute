@@ -14,11 +14,15 @@ int read_dict(const char *filename, char_counts_strings *dict, uint32_t *dict_le
     while(fgets(buflines[lineidx], 100, dictFile) != NULL) {
         char *const str = buflines[lineidx];
         const size_t len = strlen(str);
-        if (str[len-1] == '\n' || str[len-1] == '\r') {
+        if (len > 0 && (str[len-1] == '\n' || str[len-1] == '\r')) {
             str[len-1] = 0;
         }
-        if (str[len-2] == '\n' || str[len-2] == '\r') {
+        if (len > 1 && (str[len-2] == '\n' || str[len-2] == '\r')) {
             str[len-2] = 0;
+        }
+
+        if (strlen(str) == 0) {
+            continue;
         }
 
         if (strcmp(buflines[0], buflines[1])) {
