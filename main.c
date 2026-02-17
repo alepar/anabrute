@@ -140,8 +140,9 @@ int main(int argc, char *argv[]) {
     printf("%d cruncher instance(s) total\n\n", num_crunchers);
 
     // === create cpu cruncher contexts
-
-    uint32_t num_cpu_crunchers = num_cpu_cores();
+    // GPU backends handle hashing off-CPU, so all cores can enumerate.
+    // AVX/scalar crunchers run on CPU cores, so only 1 core enumerates.
+    uint32_t num_cpu_crunchers = have_gpu ? num_cpu_cores() : 1;
     volatile uint32_t shared_l0_counter = 0;
     cpu_cruncher_ctx cpu_cruncher_ctxs[num_cpu_crunchers];
     for (uint32_t id=0; id<num_cpu_crunchers; id++) {
