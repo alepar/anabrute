@@ -35,10 +35,17 @@ using namespace metal;
 #define GET(i) (key[(i)])
 
 /*
+ * GPU-8: MD5 split into partial (61 rounds) + finish (last 3 rounds).
+ * Variable `a` is last modified in round 60. By checking hash[0] = a + H0
+ * after 61 rounds, we skip the last 3 rounds for non-matches (~100% of cases).
+ *
  * @param key - char string grouped into 16 uint's (little endian)
- * @param hash - output for MD5 hash of a key (4 uint's).
+ * @param sa,sb,sc,sd - saved intermediate state for md5_finish
+ * @return hash[0] candidate (a + 0x67452301)
  */
-static void md5(const thread uint32_t *key, thread uint32_t *hash)
+static uint32_t md5_partial(const thread uint32_t *key,
+                            thread uint32_t &sa, thread uint32_t &sb,
+                            thread uint32_t &sc, thread uint32_t &sd)
 {
     uint32_t a, b, c, d;
 
@@ -101,7 +108,7 @@ static void md5(const thread uint32_t *key, thread uint32_t *hash)
     STEP(H, c, d, a, b, GET(15), 0x1fa27cf8, 16)
     STEP(H, b, c, d, a, GET(2), 0xc4ac5665, 23)
 
-    /* Round 4 */
+    /* Round 4 — steps 48-60 (last step modifying `a` is step 60) */
     STEP(I, a, b, c, d, GET(0), 0xf4292244, 6)
     STEP(I, d, a, b, c, GET(7), 0x432aff97, 10)
     STEP(I, c, d, a, b, GET(14), 0xab9423a7, 15)
@@ -115,6 +122,19 @@ static void md5(const thread uint32_t *key, thread uint32_t *hash)
     STEP(I, c, d, a, b, GET(6), 0xa3014314, 15)
     STEP(I, b, c, d, a, GET(13), 0x4e0811a1, 21)
     STEP(I, a, b, c, d, GET(4), 0xf7537e82, 6)
+    /* Steps 61-63 deferred to md5_finish */
+
+    sa = a; sb = b; sc = c; sd = d;
+    return a + 0x67452301;
+}
+
+/*
+ * Complete the last 3 MD5 rounds. Only called when hash[0] matched a target.
+ */
+static void md5_finish(thread uint32_t &a, thread uint32_t &b,
+                       thread uint32_t &c, thread uint32_t &d,
+                       const thread uint32_t *key, thread uint32_t *hash)
+{
     STEP(I, d, a, b, c, GET(11), 0xbd3af235, 10)
     STEP(I, c, d, a, b, GET(2), 0x2ad7d2bb, 15)
     STEP(I, b, c, d, a, GET(9), 0xeb86d391, 21)
@@ -233,7 +253,6 @@ kernel void permut(
     key_bytes[57] = str_len >> 5;
 
     uint32_t iter_counter = 0;
-    uint32_t computed_hash[4];
     while (true) {
         if (iter_counter >= iters_per_task) break;
 
@@ -254,22 +273,34 @@ kernel void permut(
             }
         }
 
-        md5(key, computed_hash);
+        // GPU-8: partial MD5 (61 rounds), check hash[0] before finishing
+        uint32_t sa, sb, sc, sd;
+        uint32_t hash0 = md5_partial(key, sa, sb, sc, sd);
 
-        // GPU-7 + GPU-4: early-exit hash comparison against threadgroup-cached hashes
+        bool need_full = false;
         for (uint8_t ih = 0; ih < hashes_num; ih++) {
-            if (local_hashes[4 * ih] != computed_hash[0]) continue;
-            if (local_hashes[4 * ih + 1] != computed_hash[1]) continue;
-            if (local_hashes[4 * ih + 2] != computed_hash[2]) continue;
-            if (local_hashes[4 * ih + 3] != computed_hash[3]) continue;
+            if (local_hashes[4 * ih] == hash0) { need_full = true; break; }
+        }
 
-            // match — write result
-            key_bytes[str_len] = 0; // null-terminate for output
-            for (uint8_t ihr = 0; ihr < MAX_STR_LENGTH / 4; ihr++) {
-                hashes_reversed[ih * (MAX_STR_LENGTH / 4) + ihr] = key[ihr];
+        if (need_full) {
+            uint32_t computed_hash[4];
+            md5_finish(sa, sb, sc, sd, key, computed_hash);
+
+            // GPU-7 + GPU-4: early-exit hash comparison against threadgroup-cached hashes
+            for (uint8_t ih = 0; ih < hashes_num; ih++) {
+                if (local_hashes[4 * ih] != computed_hash[0]) continue;
+                if (local_hashes[4 * ih + 1] != computed_hash[1]) continue;
+                if (local_hashes[4 * ih + 2] != computed_hash[2]) continue;
+                if (local_hashes[4 * ih + 3] != computed_hash[3]) continue;
+
+                // match — write result
+                key_bytes[str_len] = 0; // null-terminate for output
+                for (uint8_t ihr = 0; ihr < MAX_STR_LENGTH / 4; ihr++) {
+                    hashes_reversed[ih * (MAX_STR_LENGTH / 4) + ihr] = key[ihr];
+                }
+                key_bytes[str_len] = 0x80; // restore padding
+                break;
             }
-            key_bytes[str_len] = 0x80; // restore padding
-            break;
         }
 
         // Heap's algorithm: find next permutation

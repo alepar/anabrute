@@ -9,20 +9,20 @@
 
 ## GPU Kernel Optimizations (OpenCL + Metal)
 
-### GPU-1. Precompute Word Lengths Once Per Task (TODO, HIGH)
+### GPU-1. Precompute Word Lengths Once Per Task (DONE — Metal)
 
 Both `permut.cl` and `permut.metal` recompute `while(all_strs[off])` strlen for every word on every permutation. For n=4 (24 permutations), that's 96 strlen calls reduced to 4. Saves ALU + reduces branch divergence.
 
-### GPU-2. Replace PUTCHAR with Direct Byte Writes (TODO, MEDIUM)
+### GPU-2. Replace PUTCHAR with Direct Byte Writes (DONE — Metal)
 
 - **OpenCL**: Line 18 has `#pragma OPENCL EXTENSION cl_khr_byte_addressable_store : disable` — explicitly disabling byte writes. Enable it and use `((uchar*)key)[wcs] = val` to eliminate 5 ALU ops per byte.
 - **Metal**: Supports byte writes natively. Use `((thread uint8_t*)key)[wcs] = val`.
 
-### GPU-3. Hoist Key Zeroing (TODO, LOW-MEDIUM)
+### GPU-3. Hoist Key Zeroing (DONE — Metal)
 
 Both kernels zero `key[16]` every permutation. All permutations have the same total string length, so zero once before the loop. Saves 16 register writes × (n!-1) permutations.
 
-### GPU-4. Target Hashes in Local Memory (TODO, MEDIUM)
+### GPU-4. Target Hashes in Local Memory (DONE — Metal)
 
 Every work item reads `hashes[]` from global memory for every permutation. Copy to `__local` (OpenCL) / threadgroup (Metal) memory once per work group. Local memory bandwidth is ~10-50x higher.
 
@@ -34,9 +34,29 @@ Every work item reads `hashes[]` from global memory for every permutation. Copy 
 
 CPU-side batch-by-N is done. GPU side still uses fixed `MAX_ITERS_IN_KERNEL_TASK=512`. Set `iters_per_task = fact(n)` per batch so every task completes in one dispatch. Eliminates re-dispatch overhead and task state readback.
 
-### GPU-7. Early-Exit Hash Comparison (TODO, LOW)
+### GPU-7. Early-Exit Hash Comparison (DONE — Metal)
 
 Unroll the hash comparison loop to make the fast path (no match on hash[0]) explicit with `continue` instead of inner loop + break.
+
+### GPU-8. Skip Last 3 MD5 Rounds (DONE — Metal)
+
+In MD5's 64 rounds, variable `a` (hash[0]) is last modified in round 60. Compute only 61 rounds, check `a + H0` against target hash[0]. Only compute rounds 61-63 on a match. Since matches are ~1 in 2^32, this saves 3 rounds for essentially 100% of hashes (~4.7% MD5 savings). On GPU all threads in a warp skip together since no thread will match. **Result: 2.5→2.7 GAna/s (~8% improvement).** Source: penartur5 forum thread optimization.
+
+### GPU-9. OR-Based String Construction (REJECTED — Metal, TODO — AVX)
+
+Precompute each word's bytes as packed uint32s, OR them into the key buffer at the correct bit offset. Eliminates per-byte writes in the hot loop. penartur5 reported 2.5x speedup on CPU/AVX string assembly. **Result on Metal: 4x SLOWER** (600 MAna/s vs 2.5 GAna/s baseline). The precomputed wimg arrays cause massive register spilling on GPU — same root cause as GPU-11. Metal compiler generates superior code for direct byte writes. **May still benefit AVX cruncher** where L1 cache is plentiful and SIMD OR is native.
+
+### GPU-10. Rotate Intrinsic in MD5 STEP (REJECTED — Metal)
+
+Replace manual `(a << s) | (a >> (32-s))` with Metal's `rotate(a, s)`. **Result: ~1.4% improvement, within noise.** Metal compiler already recognizes and optimizes the shift+OR rotate pattern.
+
+### GPU-11. uint32 Accumulator String Construction (REJECTED — Metal)
+
+Shift+OR bytes into a uint32 accumulator, flush every 4 bytes. **Result: 2x SLOWER** (1.1 GAna/s vs 2.5 GAna/s baseline). Metal compiler generates better code for direct byte writes than manual shift+OR with per-byte branching.
+
+### GPU-12. Double-Buffered Metal Dispatches (REJECTED — Metal)
+
+Two pre-allocated MTLBuffers, overlap memcpy with GPU execution. **Result: no measurable improvement.** Apple Silicon unified memory makes memcpy nearly free, nothing to overlap.
 
 ---
 
@@ -84,6 +104,14 @@ Sort entries within each character group by descending `counts.length`. Longer w
 ### CPU-6. Precompute Compatibility Matrix (TODO, SPECULATIVE)
 
 For each pair of dictionary entries, check if `counts[i] + counts[j] <= seed_phrase`. Store as bitset. During recursion, intersect candidates with bitset.
+
+### CPU-7. Bit-Packed char_counts Overflow Check (TODO, MEDIUM)
+
+Pack all character counts into a single uint32/uint64 with sentinel bits per letter. Each letter gets ceil(log2(max_count+1))+1 bits; the extra bit detects overflow. Adding a word's packed counts to the current state and AND-ing against a mask checks all letters for overflow in one operation — no per-letter comparison loop. For this phrase (max count 4, 12 unique chars) only 36 bits needed — fits in a single uint64. Source: Nine17/Loks forum thread.
+
+### CPU-8. Duplicate Permutation Elimination (TODO, HIGH)
+
+When multiple dictionary words share the same character vector, we generate and MD5-hash all n! permutations including duplicates. For example, words with identical char_counts produce identical anagram strings when swapped. Generating only unique permutations avoids wasted MD5 cycles. Impact grows with word count — at 7 words with duplicate vectors, savings can be significant. Source: penartur5/DarkGray/alepar forum thread.
 
 ---
 
