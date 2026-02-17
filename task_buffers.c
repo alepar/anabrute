@@ -49,7 +49,7 @@ void tasks_buffer_add_task(tasks_buffer* buf, char* all_strs, int8_t* offsets) {
     memcpy(&dst_task->all_strs, all_strs, MAX_STR_LENGTH);
     memcpy(&dst_task->offsets, offsets, MAX_OFFSETS_LENGTH);
 
-    memset(&dst_task->c, 0, 8);
+    memset(&dst_task->c, 0, MAX_OFFSETS_LENGTH);
 
     buf->num_tasks++;
     buf->num_anas += fact(permutable_count);
