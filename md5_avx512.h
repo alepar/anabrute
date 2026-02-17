@@ -20,37 +20,16 @@
 
 /* Vectorized MD5 round functions using ternarylogic (1 instruction each)
  *
- * F(x,y,z) = (x & y) | (~x & z)  = ternarylogic(z, y, x, 0xCA)
- * G(x,y,z) = (z & x) | (~z & y)  = ternarylogic(y, x, z, 0xCA)
- * H(x,y,z) = x ^ y ^ z           = ternarylogic(x, y, z, 0x96)
- * I(x,y,z) = y ^ (x | ~z)        = ternarylogic(x, y, z, 0x39)
+ * vpternlogd(a, b, c, imm8) LUT index = a*4 + b*2 + c  (Intel spec).
+ * imm8 is derived with (a,b,c) = (x,y,z) for each function:
  *
- * Truth table derivation for I:
- *   x y z | ~z | x|~z | y^(x|~z)
- *   0 0 0 |  1 |   1  |    1     -> bit 0 = 1
- *   0 0 1 |  0 |   0  |    0     -> bit 1 = 0
- *   0 1 0 |  1 |   1  |    0     -> bit 2 = 0
- *   0 1 1 |  0 |   0  |    1     -> bit 3 = 1
- *   1 0 0 |  1 |   1  |    1     -> bit 4 = 1
- *   1 0 1 |  0 |   1  |    1     -> bit 5 = 1
- *   1 1 0 |  1 |   1  |    0     -> bit 6 = 0
- *   1 1 1 |  0 |   1  |    0     -> bit 7 = 0
- *   Result: 0b00110001 = 0x39   (reading bits 7..0)
- *   Wait — let me recheck with ternarylogic arg order (a=x, b=y, c=z):
- *   bit index = 4*a + 2*b + c
- *   idx 0 (a=0,b=0,c=0): y^(x|~z) = 0^(0|1) = 1
- *   idx 1 (a=0,b=0,c=1): 0^(0|0) = 0
- *   idx 2 (a=0,b=1,c=0): 1^(0|1) = 0
- *   idx 3 (a=0,b=1,c=1): 1^(0|0) = 1
- *   idx 4 (a=1,b=0,c=0): 0^(1|1) = 1
- *   idx 5 (a=1,b=0,c=1): 0^(1|0) = 1
- *   idx 6 (a=1,b=1,c=0): 1^(1|1) = 0
- *   idx 7 (a=1,b=1,c=1): 1^(1|0) = 0
- *   = 0b00110001 = reversed to 0b10001100... no wait:
- *   bits[7:0] = {bit7, bit6, ..., bit0} = {0,0,1,1,1,0,0,1} = 0x39
+ * F(x,y,z) = (x & y) | (~x & z)  -> imm8 = 0xCA, args (x, y, z)
+ * G(x,y,z) = (z & x) | (~z & y)  -> G = F(z,x,y), so reuse 0xCA with args (z, x, y)
+ * H(x,y,z) = x ^ y ^ z           -> imm8 = 0x96, args (x, y, z)  [symmetric]
+ * I(x,y,z) = y ^ (x | ~z)        -> imm8 = 0x39, args (x, y, z)
  */
-#define MD5_512_F(x, y, z) _mm512_ternarylogic_epi32((z), (y), (x), 0xCA)
-#define MD5_512_G(x, y, z) _mm512_ternarylogic_epi32((y), (x), (z), 0xCA)
+#define MD5_512_F(x, y, z) _mm512_ternarylogic_epi32((x), (y), (z), 0xCA)
+#define MD5_512_G(x, y, z) _mm512_ternarylogic_epi32((z), (x), (y), 0xCA)
 #define MD5_512_H(x, y, z) _mm512_ternarylogic_epi32((x), (y), (z), 0x96)
 #define MD5_512_I(x, y, z) _mm512_ternarylogic_epi32((x), (y), (z), 0x39)
 

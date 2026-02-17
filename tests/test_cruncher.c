@@ -1,5 +1,5 @@
-#include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "avx_cruncher.h"
 #include "cruncher.h"
@@ -11,6 +11,14 @@
 #include "task_buffers.h"
 #include "fact.h"
 #include "os.h"
+
+/* Test assertion that works regardless of NDEBUG */
+#define TEST_ASSERT(cond, msg) do { \
+    if (!(cond)) { \
+        fprintf(stderr, "FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__); \
+        exit(1); \
+    } \
+} while (0)
 
 /*
  * Helper: construct a tasks_buffer with a single manually-built task.
@@ -66,9 +74,9 @@ static void run_cruncher_on_tasks(cruncher_ops *ops, tasks_buffer *buf,
     };
 
     void *ctx = calloc(1, ops->ctx_size);
-    assert(ctx && "failed to allocate cruncher context");
+    TEST_ASSERT(ctx, "failed to allocate cruncher context");
     int err = ops->create(ctx, &cfg, 0);
-    assert(err == 0 && "failed to create cruncher");
+    TEST_ASSERT(err == 0, "failed to create cruncher");
 
     /* Add the buffer and close the queue before running, so the cruncher
      * thread will consume the buffer and then exit when it finds the queue
@@ -100,7 +108,7 @@ static void test_single_word_match(cruncher_ops *ops) {
 
     run_cruncher_on_tasks(ops, buf, hashes, 1, hashes_reversed);
 
-    assert(hashes_reversed[0] != 0 && "should find single-word match");
+    TEST_ASSERT(hashes_reversed[0] != 0, "should find single-word match");
     printf("    PASS: single word match\n");
 }
 
@@ -126,13 +134,40 @@ static void test_two_word_match(cruncher_ops *ops) {
 
     run_cruncher_on_tasks(ops, buf, hashes, 2, hashes_reversed);
 
-    assert(hashes_reversed[0] != 0 && "should find first ordering");
-    assert(hashes_reversed[MAX_STR_LENGTH / 4] != 0 && "should find second ordering");
+    TEST_ASSERT(hashes_reversed[0] != 0, "should find first ordering");
+    TEST_ASSERT(hashes_reversed[MAX_STR_LENGTH / 4] != 0, "should find second ordering");
     printf("    PASS: two word match\n");
 }
 
 /*
- * Test 3: no matching hash. Should produce zero matches.
+ * Test 3: three words "tyranous" + "pluto" + "twits" with n=3 (6 permutations).
+ * MD5("tyranous pluto twits") = 372d025e043ac20592d07b2192ff4835
+ * MD5("pluto twits tyranous") = 9f291689588620a990e9c594b315126d
+ */
+static void test_three_word_match(cruncher_ops *ops) {
+    const char *hash_hexes[] = {
+        "372d025e043ac20592d07b2192ff4835",  /* tyranous pluto twits */
+        "9f291689588620a990e9c594b315126d",  /* pluto twits tyranous */
+    };
+    uint32_t hashes[8];
+    ascii_to_hash(hash_hexes[0], hashes);
+    ascii_to_hash(hash_hexes[1], hashes + 4);
+
+    uint32_t hashes_reversed[2 * MAX_STR_LENGTH / 4];
+    memset(hashes_reversed, 0, 2 * MAX_STR_LENGTH);
+
+    const char *words[] = {"tyranous", "pluto", "twits"};
+    tasks_buffer *buf = make_task_buffer(words, 3);
+
+    run_cruncher_on_tasks(ops, buf, hashes, 2, hashes_reversed);
+
+    TEST_ASSERT(hashes_reversed[0] != 0, "should find first three-word ordering");
+    TEST_ASSERT(hashes_reversed[MAX_STR_LENGTH / 4] != 0, "should find second three-word ordering");
+    printf("    PASS: three word match\n");
+}
+
+/*
+ * Test 4: no matching hash. Should produce zero matches.
  */
 static void test_no_match(cruncher_ops *ops) {
     const char *hash_hex = "00000000000000000000000000000000";
@@ -147,12 +182,12 @@ static void test_no_match(cruncher_ops *ops) {
 
     run_cruncher_on_tasks(ops, buf, hashes, 1, hashes_reversed);
 
-    assert(hashes_reversed[0] == 0 && "should NOT find match for zero hash");
+    TEST_ASSERT(hashes_reversed[0] == 0, "should NOT find match for zero hash");
     printf("    PASS: no false matches\n");
 }
 
 /*
- * Test 4: multiple hashes, only one should match.
+ * Test 5: multiple hashes, only one should match.
  * Hash 0: MD5("tyranousplutotwits") = 896304cdb1add2652c6445f245cfd3b2  -> should match
  * Hash 1: all zeros -> should NOT match
  */
@@ -173,8 +208,8 @@ static void test_multiple_hashes_selective(cruncher_ops *ops) {
 
     run_cruncher_on_tasks(ops, buf, hashes, 2, hashes_reversed);
 
-    assert(hashes_reversed[0] != 0 && "should find match for real hash");
-    assert(hashes_reversed[MAX_STR_LENGTH / 4] == 0 && "should NOT match zero hash");
+    TEST_ASSERT(hashes_reversed[0] != 0, "should find match for real hash");
+    TEST_ASSERT(hashes_reversed[MAX_STR_LENGTH / 4] == 0, "should NOT match zero hash");
     printf("    PASS: multiple hashes, only correct matches\n");
 }
 
@@ -182,6 +217,7 @@ static void run_backend_tests(cruncher_ops *ops) {
     printf("  Testing %s backend:\n", ops->name);
     test_single_word_match(ops);
     test_two_word_match(ops);
+    test_three_word_match(ops);
     test_no_match(ops);
     test_multiple_hashes_selective(ops);
 }
