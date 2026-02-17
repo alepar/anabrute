@@ -25,7 +25,7 @@ add_compile_options(-Wno-int-conversion)
 
 # Enable AVX2 for avx_cruncher.c on x86_64
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2")
+    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2 -mavx512f")
 endif()
 
 # === Main binary (works with or without OpenCL) ===
@@ -60,6 +60,17 @@ set_property(TARGET bench_avx PROPERTY C_STANDARD 99)
 target_include_directories(bench_avx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bench_avx pthread)
 target_compile_options(bench_avx PRIVATE -O2)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    set_source_files_properties(bench_avx.c PROPERTIES COMPILE_FLAGS "-mavx2 -mavx512f")
+endif()
+
+add_executable(bench_breakdown bench_breakdown.c os.c)
+set_property(TARGET bench_breakdown PROPERTY C_STANDARD 99)
+target_include_directories(bench_breakdown PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(bench_breakdown PRIVATE -O2)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    target_compile_options(bench_breakdown PRIVATE -mavx2 -mavx512f)
+endif()
 
 # === Tests ===
 enable_testing()
