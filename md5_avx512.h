@@ -189,6 +189,101 @@ static inline void md5_avx512_x16(const uint32_t *keys[16], uint32_t *hashes[16]
     }
 }
 
+/*
+ * Compute 16 MD5 hashes, returning raw __m512i vectors (no scatter).
+ * Takes a contiguous uint32_t[16][16] array directly.
+ * Caller can do SIMD comparison on the vectors before extracting scalars.
+ */
+static inline void md5_avx512_x16_vec(
+    const uint32_t *base,  /* pointer to contiguous keys[16][16] */
+    __m512i *out_a, __m512i *out_b, __m512i *out_c, __m512i *out_d
+) {
+    __m512i k[16];
+    const __m512i lane_offsets = _mm512_setr_epi32(
+        0*16, 1*16, 2*16, 3*16, 4*16, 5*16, 6*16, 7*16,
+        8*16, 9*16, 10*16, 11*16, 12*16, 13*16, 14*16, 15*16
+    );
+    for (int w = 0; w < 16; w++) {
+        __m512i indices = _mm512_add_epi32(lane_offsets, _mm512_set1_epi32(w));
+        k[w] = _mm512_i32gather_epi32(indices, (const int *)base, 4);
+    }
+
+    __m512i a = _mm512_set1_epi32(0x67452301);
+    __m512i b = _mm512_set1_epi32((int32_t)0xefcdab89);
+    __m512i c = _mm512_set1_epi32((int32_t)0x98badcfe);
+    __m512i d = _mm512_set1_epi32(0x10325476);
+
+    MD5_512_STEP(MD5_512_F, a, b, c, d, k[ 0], 0xd76aa478,  7);
+    MD5_512_STEP(MD5_512_F, d, a, b, c, k[ 1], 0xe8c7b756, 12);
+    MD5_512_STEP(MD5_512_F, c, d, a, b, k[ 2], 0x242070db, 17);
+    MD5_512_STEP(MD5_512_F, b, c, d, a, k[ 3], 0xc1bdceee, 22);
+    MD5_512_STEP(MD5_512_F, a, b, c, d, k[ 4], 0xf57c0faf,  7);
+    MD5_512_STEP(MD5_512_F, d, a, b, c, k[ 5], 0x4787c62a, 12);
+    MD5_512_STEP(MD5_512_F, c, d, a, b, k[ 6], 0xa8304613, 17);
+    MD5_512_STEP(MD5_512_F, b, c, d, a, k[ 7], 0xfd469501, 22);
+    MD5_512_STEP(MD5_512_F, a, b, c, d, k[ 8], 0x698098d8,  7);
+    MD5_512_STEP(MD5_512_F, d, a, b, c, k[ 9], 0x8b44f7af, 12);
+    MD5_512_STEP(MD5_512_F, c, d, a, b, k[10], 0xffff5bb1, 17);
+    MD5_512_STEP(MD5_512_F, b, c, d, a, k[11], 0x895cd7be, 22);
+    MD5_512_STEP(MD5_512_F, a, b, c, d, k[12], 0x6b901122,  7);
+    MD5_512_STEP(MD5_512_F, d, a, b, c, k[13], 0xfd987193, 12);
+    MD5_512_STEP(MD5_512_F, c, d, a, b, k[14], 0xa679438e, 17);
+    MD5_512_STEP(MD5_512_F, b, c, d, a, k[15], 0x49b40821, 22);
+    MD5_512_STEP(MD5_512_G, a, b, c, d, k[ 1], 0xf61e2562,  5);
+    MD5_512_STEP(MD5_512_G, d, a, b, c, k[ 6], 0xc040b340,  9);
+    MD5_512_STEP(MD5_512_G, c, d, a, b, k[11], 0x265e5a51, 14);
+    MD5_512_STEP(MD5_512_G, b, c, d, a, k[ 0], 0xe9b6c7aa, 20);
+    MD5_512_STEP(MD5_512_G, a, b, c, d, k[ 5], 0xd62f105d,  5);
+    MD5_512_STEP(MD5_512_G, d, a, b, c, k[10], 0x02441453,  9);
+    MD5_512_STEP(MD5_512_G, c, d, a, b, k[15], 0xd8a1e681, 14);
+    MD5_512_STEP(MD5_512_G, b, c, d, a, k[ 4], 0xe7d3fbc8, 20);
+    MD5_512_STEP(MD5_512_G, a, b, c, d, k[ 9], 0x21e1cde6,  5);
+    MD5_512_STEP(MD5_512_G, d, a, b, c, k[14], 0xc33707d6,  9);
+    MD5_512_STEP(MD5_512_G, c, d, a, b, k[ 3], 0xf4d50d87, 14);
+    MD5_512_STEP(MD5_512_G, b, c, d, a, k[ 8], 0x455a14ed, 20);
+    MD5_512_STEP(MD5_512_G, a, b, c, d, k[13], 0xa9e3e905,  5);
+    MD5_512_STEP(MD5_512_G, d, a, b, c, k[ 2], 0xfcefa3f8,  9);
+    MD5_512_STEP(MD5_512_G, c, d, a, b, k[ 7], 0x676f02d9, 14);
+    MD5_512_STEP(MD5_512_G, b, c, d, a, k[12], 0x8d2a4c8a, 20);
+    MD5_512_STEP(MD5_512_H, a, b, c, d, k[ 5], 0xfffa3942,  4);
+    MD5_512_STEP(MD5_512_H, d, a, b, c, k[ 8], 0x8771f681, 11);
+    MD5_512_STEP(MD5_512_H, c, d, a, b, k[11], 0x6d9d6122, 16);
+    MD5_512_STEP(MD5_512_H, b, c, d, a, k[14], 0xfde5380c, 23);
+    MD5_512_STEP(MD5_512_H, a, b, c, d, k[ 1], 0xa4beea44,  4);
+    MD5_512_STEP(MD5_512_H, d, a, b, c, k[ 4], 0x4bdecfa9, 11);
+    MD5_512_STEP(MD5_512_H, c, d, a, b, k[ 7], 0xf6bb4b60, 16);
+    MD5_512_STEP(MD5_512_H, b, c, d, a, k[10], 0xbebfbc70, 23);
+    MD5_512_STEP(MD5_512_H, a, b, c, d, k[13], 0x289b7ec6,  4);
+    MD5_512_STEP(MD5_512_H, d, a, b, c, k[ 0], 0xeaa127fa, 11);
+    MD5_512_STEP(MD5_512_H, c, d, a, b, k[ 3], 0xd4ef3085, 16);
+    MD5_512_STEP(MD5_512_H, b, c, d, a, k[ 6], 0x04881d05, 23);
+    MD5_512_STEP(MD5_512_H, a, b, c, d, k[ 9], 0xd9d4d039,  4);
+    MD5_512_STEP(MD5_512_H, d, a, b, c, k[12], 0xe6db99e5, 11);
+    MD5_512_STEP(MD5_512_H, c, d, a, b, k[15], 0x1fa27cf8, 16);
+    MD5_512_STEP(MD5_512_H, b, c, d, a, k[ 2], 0xc4ac5665, 23);
+    MD5_512_STEP(MD5_512_I, a, b, c, d, k[ 0], 0xf4292244,  6);
+    MD5_512_STEP(MD5_512_I, d, a, b, c, k[ 7], 0x432aff97, 10);
+    MD5_512_STEP(MD5_512_I, c, d, a, b, k[14], 0xab9423a7, 15);
+    MD5_512_STEP(MD5_512_I, b, c, d, a, k[ 5], 0xfc93a039, 21);
+    MD5_512_STEP(MD5_512_I, a, b, c, d, k[12], 0x655b59c3,  6);
+    MD5_512_STEP(MD5_512_I, d, a, b, c, k[ 3], 0x8f0ccc92, 10);
+    MD5_512_STEP(MD5_512_I, c, d, a, b, k[10], 0xffeff47d, 15);
+    MD5_512_STEP(MD5_512_I, b, c, d, a, k[ 1], 0x85845dd1, 21);
+    MD5_512_STEP(MD5_512_I, a, b, c, d, k[ 8], 0x6fa87e4f,  6);
+    MD5_512_STEP(MD5_512_I, d, a, b, c, k[15], 0xfe2ce6e0, 10);
+    MD5_512_STEP(MD5_512_I, c, d, a, b, k[ 6], 0xa3014314, 15);
+    MD5_512_STEP(MD5_512_I, b, c, d, a, k[13], 0x4e0811a1, 21);
+    MD5_512_STEP(MD5_512_I, a, b, c, d, k[ 4], 0xf7537e82,  6);
+    MD5_512_STEP(MD5_512_I, d, a, b, c, k[11], 0xbd3af235, 10);
+    MD5_512_STEP(MD5_512_I, c, d, a, b, k[ 2], 0x2ad7d2bb, 15);
+    MD5_512_STEP(MD5_512_I, b, c, d, a, k[ 9], 0xeb86d391, 21);
+
+    *out_a = _mm512_add_epi32(a, _mm512_set1_epi32(0x67452301));
+    *out_b = _mm512_add_epi32(b, _mm512_set1_epi32((int32_t)0xefcdab89));
+    *out_c = _mm512_add_epi32(c, _mm512_set1_epi32((int32_t)0x98badcfe));
+    *out_d = _mm512_add_epi32(d, _mm512_set1_epi32(0x10325476));
+}
+
 #endif /* __x86_64__ && __AVX512F__ */
 
 #endif /* ANABRUTE_MD5_AVX512_H */

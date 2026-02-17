@@ -221,51 +221,103 @@ static void check_hashes(cruncher_config *cfg, uint32_t *hash, uint32_t *key, in
     }
 }
 
+/*
+ * SIMD hash check: compare 16 hash[0] values against all targets using AVX-512.
+ * Only extracts and does full 4-word comparison for lanes with hash[0] match.
+ * Returns without extracting anything for the ~100% case of no matches.
+ */
+#if defined(__x86_64__) && defined(__AVX512F__)
+static void check_hashes_avx512(cruncher_config *cfg,
+                                __m512i ha, __m512i hb, __m512i hc, __m512i hd,
+                                uint32_t keys[16][16], int wcs_arr[16], int count) {
+    /* SIMD early-exit: compare hash[0] across all 16 lanes against all targets */
+    __mmask16 any_match = 0;
+    for (uint32_t ih = 0; ih < cfg->hashes_num; ih++) {
+        any_match |= _mm512_cmpeq_epi32_mask(ha,
+                         _mm512_set1_epi32((int32_t)cfg->hashes[4 * ih]));
+    }
+    if (!any_match) return;  /* fast path: no hash[0] match in any lane */
+
+    /* Slow path: extract scalars and do full 4-word comparison */
+    uint32_t a_vals[16], b_vals[16], c_vals[16], d_vals[16];
+    _mm512_storeu_si512(a_vals, ha);
+    _mm512_storeu_si512(b_vals, hb);
+    _mm512_storeu_si512(c_vals, hc);
+    _mm512_storeu_si512(d_vals, hd);
+
+    __mmask16 remaining = any_match & (((uint32_t)1 << count) - 1);
+    while (remaining) {
+        int lane = __builtin_ctz(remaining);
+        remaining &= remaining - 1;
+        uint32_t hash[4] = {a_vals[lane], b_vals[lane], c_vals[lane], d_vals[lane]};
+        check_hashes(cfg, hash, keys[lane], wcs_arr[lane]);
+    }
+}
+#endif
+
 static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
     if (task->i >= task->n) return;
     cruncher_config *cfg = actx->cfg;
 
 #if defined(__x86_64__) && defined(__AVX512F__)
-    /* Batch 16 permutations for AVX-512 MD5 */
+    /* --- Precompute word lengths (indexed by byte offset in all_strs) ---
+     * The set of byte offsets never changes during permutation (only their order
+     * in a[] changes), so we can compute strlen once per task. */
+    uint8_t wlen[MAX_STR_LENGTH];
+    memset(wlen, 0, sizeof(wlen));
+    int num_offsets = 0;
+    for (int io = 0; task->offsets[io]; io++) {
+        int8_t off = task->offsets[io];
+        int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
+        if (!wlen[byte_off]) {
+            int l = 0;
+            while (task->all_strs[byte_off + l]) l++;
+            wlen[byte_off] = l;
+        }
+        num_offsets = io + 1;
+    }
+
+    /* --- Main permutation loop with inlined string construction --- */
     uint32_t keys[16][16];
     int wcs_arr[16];
     int batch = 0;
 
     do {
-        wcs_arr[batch] = construct_string(task, keys[batch]);
+        /* Inline construct_string with precomputed lengths */
+        memset(keys[batch], 0, 64);
+        char *dst = (char *)keys[batch];
+        int wcs = 0;
+        for (int io = 0; io < num_offsets; io++) {
+            int8_t off = task->offsets[io];
+            int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
+            int len = wlen[byte_off];
+            memcpy(dst + wcs, &task->all_strs[byte_off], len);
+            wcs += len;
+            dst[wcs++] = ' ';
+        }
+        wcs--;
+        dst[wcs] = (char)0x80;
+        dst[56] = (char)(wcs << 3);
+        dst[57] = (char)(wcs >> 5);
+        wcs_arr[batch] = wcs;
         batch++;
 
         if (batch == 16) {
-            const uint32_t *key_ptrs[16];
-            uint32_t *hash_ptrs[16];
-            uint32_t hashes_out[16][4];
-            for (int i = 0; i < 16; i++) {
-                key_ptrs[i] = keys[i];
-                hash_ptrs[i] = hashes_out[i];
-            }
-
-            md5_avx512_x16(key_ptrs, hash_ptrs);
-
-            for (int i = 0; i < 16; i++) {
-                check_hashes(cfg, hashes_out[i], keys[i], wcs_arr[i]);
-            }
+            /* AVX-512 MD5 with vector output for SIMD hash check */
+            __m512i ha, hb, hc, hd;
+            md5_avx512_x16_vec((const uint32_t *)keys, &ha, &hb, &hc, &hd);
+            check_hashes_avx512(cfg, ha, hb, hc, hd, keys, wcs_arr, 16);
             batch = 0;
         }
     } while (heap_next(task));
 
     /* Tail: pad to 16 with duplicates of last key, hash all, check only real ones */
     if (batch > 0) {
-        const uint32_t *key_ptrs[16];
-        uint32_t *hash_ptrs[16];
-        uint32_t hashes_out[16][4];
-        for (int i = 0; i < 16; i++) {
-            key_ptrs[i] = (i < batch) ? keys[i] : keys[batch - 1];
-            hash_ptrs[i] = hashes_out[i];
-        }
-        md5_avx512_x16(key_ptrs, hash_ptrs);
-        for (int i = 0; i < batch; i++) {
-            check_hashes(cfg, hashes_out[i], keys[i], wcs_arr[i]);
-        }
+        for (int i = batch; i < 16; i++)
+            memcpy(keys[i], keys[batch - 1], 64);
+        __m512i ha, hb, hc, hd;
+        md5_avx512_x16_vec((const uint32_t *)keys, &ha, &hb, &hc, &hd);
+        check_hashes_avx512(cfg, ha, hb, hc, hd, keys, wcs_arr, batch);
     }
 #elif defined(__x86_64__) || defined(_M_AMD64)
     /* Batch 8 permutations for AVX2 MD5 */
