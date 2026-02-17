@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include "avx_cruncher.h"
 #include "cruncher.h"
 #include "opencl_cruncher.h"
 #include "hashes.h"
@@ -187,7 +188,7 @@ int main(void) {
 
     cruncher_ops *backends[] = {
         &opencl_cruncher_ops,
-        /* Future: &avx_cruncher_ops, */
+        &avx_cruncher_ops,
         /* Future: &metal_cruncher_ops, */
         NULL
     };

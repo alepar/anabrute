@@ -11,14 +11,19 @@ endif()
 # suppress int-to-pointer warnings from ret_iferr macro in void* functions (known bug)
 add_compile_options(-Wno-int-conversion)
 
-add_executable (anabrute main.c opencl_cruncher.c gpu_cruncher.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
+add_executable (anabrute main.c opencl_cruncher.c gpu_cruncher.c avx_cruncher.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
 set_property(TARGET anabrute PROPERTY C_STANDARD 99)
 target_include_directories (anabrute PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries (anabrute pthread)
 target_link_libraries (anabrute ${OpenCL_LIBRARY})
 #target_link_libraries (anabrute "C:/Program Files/NVIDIA Corporation/OpenCL/OpenCL64.dll")
 
-add_executable (kernel_debug kernel_debug.c opencl_cruncher.c gpu_cruncher.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
+# Enable AVX2 for avx_cruncher.c on x86_64
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2")
+endif()
+
+add_executable (kernel_debug kernel_debug.c opencl_cruncher.c gpu_cruncher.c avx_cruncher.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
 set_property(TARGET kernel_debug PROPERTY C_STANDARD 99)
 target_include_directories (kernel_debug PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries (kernel_debug pthread)
@@ -52,7 +57,7 @@ target_link_libraries(test_cpu_enumeration pthread)
 add_test(NAME cpu_enumeration COMMAND test_cpu_enumeration)
 
 add_executable(test_cruncher tests/test_cruncher.c
-    opencl_cruncher.c gpu_cruncher.c task_buffers.c hashes.c permut_types.c seedphrase.c fact.c os.c)
+    opencl_cruncher.c gpu_cruncher.c avx_cruncher.c task_buffers.c hashes.c permut_types.c seedphrase.c fact.c os.c)
 set_property(TARGET test_cruncher PROPERTY C_STANDARD 99)
 target_include_directories(test_cruncher PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_cruncher PRIVATE -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)

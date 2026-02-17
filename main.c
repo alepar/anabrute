@@ -1,4 +1,5 @@
 #include "common.h"
+#include "avx_cruncher.h"
 #include "cpu_cruncher.h"
 #include "cruncher.h"
 #include "opencl_cruncher.h"
@@ -57,7 +58,7 @@ int main(int argc, char *argv[]) {
 
     cruncher_ops *all_backends[] = {
         &opencl_cruncher_ops,
-        // Future: &avx_cruncher_ops,
+        &avx_cruncher_ops,
         // Future: &metal_cruncher_ops,
         NULL
     };
