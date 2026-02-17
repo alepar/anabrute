@@ -277,14 +277,19 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
         num_offsets = io + 1;
     }
 
-    /* --- Main permutation loop with inlined string construction --- */
+    /* --- Main permutation loop with inlined string construction ---
+     *
+     * All permutations of a task have the same total string length (same words,
+     * different order). Zero all key buffers once upfront; subsequent permutations
+     * only overwrite word data bytes (0..wcs-1) + constant padding at wcs, 56-57.
+     * Bytes wcs+1..55 and 58..63 stay 0 from the initial memset.
+     */
     uint32_t keys[16][16];
+    memset(keys, 0, sizeof(keys));
     int wcs_arr[16];
     int batch = 0;
 
     do {
-        /* Inline construct_string with precomputed lengths */
-        memset(keys[batch], 0, 64);
         char *dst = (char *)keys[batch];
         int wcs = 0;
         for (int io = 0; io < num_offsets; io++) {
@@ -303,7 +308,6 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
         batch++;
 
         if (batch == 16) {
-            /* AVX-512 MD5 with vector output for SIMD hash check */
             __m512i ha, hb, hc, hd;
             md5_avx512_x16_vec((const uint32_t *)keys, &ha, &hb, &hc, &hd);
             check_hashes_avx512(cfg, ha, hb, hc, hd, keys, wcs_arr, 16);
@@ -311,7 +315,7 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
         }
     } while (heap_next(task));
 
-    /* Tail: pad to 16 with duplicates of last key, hash all, check only real ones */
+    /* Tail: pad to 16 with duplicates of last key */
     if (batch > 0) {
         for (int i = batch; i < 16; i++)
             memcpy(keys[i], keys[batch - 1], 64);
