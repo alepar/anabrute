@@ -169,78 +169,110 @@ static uint64_t fact(uint8_t x) {
     }
 }
 
+#define MAX_HASHES 32
+
 kernel void permut(
     device permut_task *tasks [[buffer(0)]],
     constant uint32_t &iters_per_task [[buffer(1)]],
     constant uint32_t *hashes [[buffer(2)]],
     constant uint32_t &hashes_num [[buffer(3)]],
     device uint32_t *hashes_reversed [[buffer(4)]],
-    uint id [[thread_position_in_grid]])
+    uint id [[thread_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
 {
-    // Use direct struct assignment (Metal's uint32_t type-punning copy
-    // breaks uint16_t fields due to strict aliasing)
+    // GPU-4: cooperative load of target hashes into threadgroup memory
+    threadgroup uint32_t local_hashes[MAX_HASHES * 4];
+    for (uint i = tid; i < hashes_num * 4; i += tg_size) {
+        local_hashes[i] = hashes[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
     permut_task task = tasks[id];
 
-    if (task.i >= task.n) { // this task is already completed
+    if (task.i >= task.n) {
         return;
     }
 
-    uint32_t key[16];  // stores constructed string for md5 calculation
+    // GPU-1: precompute word lengths (constant across all permutations)
+    uint8_t wlen[MAX_STR_LENGTH];
+    // lengths for fixed words (negative offsets)
+    for (uint8_t io = 0; task.offsets[io]; io++) {
+        if (task.offsets[io] < 0) {
+            uint8_t byte_off = -task.offsets[io] - 1;
+            uint8_t l = 0;
+            while (task.all_strs[byte_off + l]) l++;
+            wlen[byte_off] = l;
+        }
+    }
+    // lengths for permutable words (a[] entries)
+    for (uint8_t ai = 0; ai < task.n; ai++) {
+        uint8_t byte_off = task.a[ai] - 1;
+        uint8_t l = 0;
+        while (task.all_strs[byte_off + l]) l++;
+        wlen[byte_off] = l;
+    }
+
+    // Precompute total string length (constant across permutations)
+    uint8_t str_len = 0;
+    uint8_t num_words = 0;
+    for (uint8_t io = 0; task.offsets[io]; io++) {
+        char soff = task.offsets[io];
+        uint8_t off = (soff < 0) ? (-soff - 1) : (task.a[soff - 1] - 1);
+        str_len += wlen[off];
+        num_words++;
+    }
+    str_len += num_words - 1; // spaces between words
+
+    // GPU-3: zero key once and set constant MD5 padding
+    uint32_t key[16];
+    for (uint8_t ik = 0; ik < 16; ik++) key[ik] = 0;
+    thread uint8_t *key_bytes = (thread uint8_t*)key;
+    key_bytes[str_len] = 0x80;
+    key_bytes[56] = str_len << 3;
+    key_bytes[57] = str_len >> 5;
 
     uint32_t iter_counter = 0;
     uint32_t computed_hash[4];
     while (true) {
         if (iter_counter >= iters_per_task) break;
 
-        for (uint8_t ik = 0; ik < 16; ik++) {
-            key[ik] = 0;
-        }
-        // construct key
+        // GPU-1 + GPU-2: construct key with precomputed lengths + native byte writes
         uint8_t wcs = 0;
         for (uint8_t io = 0; task.offsets[io]; io++) {
-            char off = task.offsets[io];
-            if (off < 0) {
-                off = -off - 1;
+            if (wcs > 0) key_bytes[wcs++] = ' ';
+            char soff = task.offsets[io];
+            uint8_t off;
+            if (soff < 0) {
+                off = -soff - 1;
             } else {
-                off = task.a[off - 1] - 1;
+                off = task.a[soff - 1] - 1;
             }
-
-            while (task.all_strs[off]) {
-                PUTCHAR(key, wcs, task.all_strs[off]);
-                wcs++; off++;
+            uint8_t len = wlen[off];
+            for (uint8_t j = 0; j < len; j++) {
+                key_bytes[wcs++] = task.all_strs[off + j];
             }
-            PUTCHAR(key, wcs, ' ');
-            wcs++;
         }
-        wcs--;
-        // padding code (borrowed from MD5_eq.c)
-        PUTCHAR(key, wcs, 0x80);
-        PUTCHAR(key, 56, wcs << 3);
-        PUTCHAR(key, 57, wcs >> 5);
 
-        // calculate hash
         md5(key, computed_hash);
 
-        // is hash a match?
+        // GPU-7 + GPU-4: early-exit hash comparison against threadgroup-cached hashes
         for (uint8_t ih = 0; ih < hashes_num; ih++) {
-            uint8_t match = 1;
-            for (uint8_t ihj = 0; ihj < 4; ihj++) {
-                if (hashes[4 * ih + ihj] != computed_hash[ihj]) {
-                    match = 0;
-                    break;
-                }
-            }
+            if (local_hashes[4 * ih] != computed_hash[0]) continue;
+            if (local_hashes[4 * ih + 1] != computed_hash[1]) continue;
+            if (local_hashes[4 * ih + 2] != computed_hash[2]) continue;
+            if (local_hashes[4 * ih + 3] != computed_hash[3]) continue;
 
-            if (match) {
-                PUTCHAR(key, wcs, 0);
-                for (uint8_t ihr = 0; ihr < MAX_STR_LENGTH / 4; ihr++) {
-                    hashes_reversed[ih * (MAX_STR_LENGTH / 4) + ihr] = key[ihr];
-                }
-                break;
+            // match — write result
+            key_bytes[str_len] = 0; // null-terminate for output
+            for (uint8_t ihr = 0; ihr < MAX_STR_LENGTH / 4; ihr++) {
+                hashes_reversed[ih * (MAX_STR_LENGTH / 4) + ihr] = key[ihr];
             }
+            key_bytes[str_len] = 0x80; // restore padding
+            break;
         }
 
-        // find next permut if possible
+        // Heap's algorithm: find next permutation
         bool found_next = false;
         while (task.i < task.n) {
             if (task.c[task.i] < task.i) {
@@ -258,25 +290,19 @@ kernel void permut(
                 task.i = 0;
                 iter_counter++;
                 found_next = true;
-                break; // consume generated permutation
+                break;
             } else {
                 task.c[task.i] = 0;
                 task.i++;
             }
         }
 
-        if (!found_next) {
-            // no permutations left, exiting
-            break;
-        }
+        if (!found_next) break;
     }
 
     task.iters_done += iter_counter;
 
-    // Write back mutable state (a[], c[], i, n, iters_done).
-    // all_strs and offsets never change so we skip them.
-    // Use direct field writes instead of uint32_t type-punning copy
-    // (Metal strict aliasing breaks uint16_t fields with uint32_t casts).
+    // Write back mutable state
     for (uint8_t idx = 0; idx < MAX_OFFSETS_LENGTH; idx++) {
         tasks[id].a[idx] = task.a[idx];
         tasks[id].c[idx] = task.c[idx];

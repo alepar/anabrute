@@ -15,11 +15,15 @@
 static const char* size_suffixes[] = {"", "K", "M", "G", "T", "P"};
 void format_bignum(uint64_t value, char *dst, uint16_t div) {
     int divs = 0;
-    while (value/div > 1) {
-        value = value/div;
+    double dval = (double)value;
+    while (dval / div >= 1.0) {
+        dval /= div;
         divs++;
     }
-    sprintf(dst, "%lu%s", value, size_suffixes[divs]);
+    if (divs >= 3) // G and above: show 1 decimal
+        sprintf(dst, "%.1f%s", dval, size_suffixes[divs]);
+    else
+        sprintf(dst, "%d%s", (int)dval, size_suffixes[divs]);
 }
 
 static int cmp_ccs_length_desc(const void *a, const void *b) {
@@ -234,7 +238,7 @@ int main(int argc, char *argv[]) {
                            crunchers[i].ops->name, backend_count, aps_str, backend_busy);
         }
 
-        printf("%s\r", strbuf);
+        printf("\033[2K\r%s", strbuf);
         fflush(stdout);
 
         // if all cpu threads are done - send poison pill to crunchers

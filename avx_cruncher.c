@@ -236,6 +236,7 @@ static void check_hashes_avx512(cruncher_config *cfg,
         any_match |= _mm512_cmpeq_epi32_mask(ha,
                          _mm512_set1_epi32((int32_t)cfg->hashes[4 * ih]));
     }
+
     if (!any_match) return;  /* fast path: no hash[0] match in any lane */
 
     /* Slow path: extract scalars and do full 4-word comparison */

@@ -153,9 +153,6 @@ static void *metal_run(void *ctx) {
             /* Copy tasks into pre-allocated GPU buffer */
             memcpy([mctx->buf_tasks contents], buf->permut_tasks, num_tasks * sizeof(permut_task));
 
-            /* Single dispatch — Metal has no GPU watchdog timeout on macOS,
-             * so we set iters_per_task = UINT32_MAX to always run to completion.
-             * With MAX_WORD_LENGTH=5, max n=5, fact(5)=120 — tasks always finish. */
             @autoreleasepool {
                 uint64_t dispatch_start = current_micros();
 
