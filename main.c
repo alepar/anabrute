@@ -3,6 +3,9 @@
 #include "cpu_cruncher.h"
 #include "cruncher.h"
 #include "opencl_cruncher.h"
+#ifdef __APPLE__
+#include "metal_cruncher.h"
+#endif
 #include "dict.h"
 #include "fact.h"
 #include "hashes.h"
@@ -57,9 +60,11 @@ int main(int argc, char *argv[]) {
     // === probe and create crunchers ===
 
     cruncher_ops *all_backends[] = {
+#ifdef __APPLE__
+        &metal_cruncher_ops,
+#endif
         &opencl_cruncher_ops,
         &avx_cruncher_ops,
-        // Future: &metal_cruncher_ops,
         NULL
     };
 

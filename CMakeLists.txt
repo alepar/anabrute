@@ -1,6 +1,11 @@
 cmake_minimum_required (VERSION 3.5)
 project(anabrute)
 
+if(APPLE)
+    enable_language(OBJC)
+    set_source_files_properties(metal_cruncher.m PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
+
 find_package(OpenCL REQUIRED)
 
 # homebrew includes (event.h, unitypes.h on macOS)
@@ -18,6 +23,11 @@ target_link_libraries (anabrute pthread)
 target_link_libraries (anabrute ${OpenCL_LIBRARY})
 #target_link_libraries (anabrute "C:/Program Files/NVIDIA Corporation/OpenCL/OpenCL64.dll")
 
+if(APPLE)
+    target_sources(anabrute PRIVATE metal_cruncher.m)
+    target_link_libraries(anabrute "-framework Metal" "-framework Foundation")
+endif()
+
 # Enable AVX2 for avx_cruncher.c on x86_64
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2")
@@ -29,6 +39,10 @@ target_include_directories (kernel_debug PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries (kernel_debug pthread)
 target_link_libraries (kernel_debug ${OpenCL_LIBRARY})
 #target_link_libraries (kernel_debug "C:/Program Files/NVIDIA Corporation/OpenCL/OpenCL64.dll")
+if(APPLE)
+    target_sources(kernel_debug PRIVATE metal_cruncher.m)
+    target_link_libraries(kernel_debug "-framework Metal" "-framework Foundation")
+endif()
 
 # === Tests ===
 enable_testing()
@@ -60,8 +74,16 @@ add_executable(test_cruncher tests/test_cruncher.c
     opencl_cruncher.c gpu_cruncher.c avx_cruncher.c task_buffers.c hashes.c permut_types.c seedphrase.c fact.c os.c)
 set_property(TARGET test_cruncher PROPERTY C_STANDARD 99)
 target_include_directories(test_cruncher PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_cruncher PRIVATE -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
-target_link_options(test_cruncher PRIVATE -fsanitize=address -fsanitize=undefined)
+if(APPLE)
+    # ASAN causes massive memory overhead with Metal runtime; disable for this target on macOS
+    target_compile_options(test_cruncher PRIVATE -fsanitize=undefined -fno-omit-frame-pointer)
+    target_link_options(test_cruncher PRIVATE -fsanitize=undefined)
+    target_sources(test_cruncher PRIVATE metal_cruncher.m)
+    target_link_libraries(test_cruncher "-framework Metal" "-framework Foundation")
+else()
+    target_compile_options(test_cruncher PRIVATE -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
+    target_link_options(test_cruncher PRIVATE -fsanitize=address -fsanitize=undefined)
+endif()
 target_link_libraries(test_cruncher pthread ${OpenCL_LIBRARY})
 add_test(NAME cruncher COMMAND test_cruncher)
 set_tests_properties(cruncher PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
