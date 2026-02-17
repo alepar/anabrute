@@ -381,9 +381,8 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
 static uint32_t avx_probe(void) {
 #if defined(__x86_64__) || defined(_M_AMD64)
     uint32_t cores = num_cpu_cores();
-    uint32_t suggest = cores > 1 ? cores - 1 : 1;
-    printf("  avx: %d cores available, suggesting %d thread(s)\n", cores, suggest);
-    return suggest;
+    printf("  avx: %d cores available, suggesting %d thread(s)\n", cores, cores);
+    return cores;
 #else
     return 0;
 #endif
@@ -391,9 +390,8 @@ static uint32_t avx_probe(void) {
 
 static uint32_t scalar_probe(void) {
     uint32_t cores = num_cpu_cores();
-    uint32_t suggest = cores > 1 ? cores - 1 : 1;
-    printf("  cpu: %d cores available, suggesting %d thread(s)\n", cores, suggest);
-    return suggest;
+    printf("  cpu: %d cores available, suggesting %d thread(s)\n", cores, cores);
+    return cores;
 }
 
 static int avx_create(void *ctx, cruncher_config *cfg, uint32_t instance_id) {
