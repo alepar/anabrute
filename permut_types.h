@@ -8,7 +8,7 @@
 #define MAX_DICT_SIZE 2048
 
 typedef struct {
-    uint8_t counts[CHARCOUNT];
+    uint8_t counts[16];  /* only first CHARCOUNT(12) entries used; rest zero for SIMD */
     uint8_t length;
 } char_counts;
 

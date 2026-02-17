@@ -119,9 +119,9 @@ int recurse_string_combs(cpu_cruncher_ctx* ctx, stack_item *stack, int stack_len
                 sics[sics_len].count = scs[i].count;
                 sics[sics_len].offset = all_offs;
                 sics_len++;
-                for (int j=0; j<=strlen(scs[i].str); j++) {
-                    all_strs[all_offs++] = scs[i].str[j];
-                }
+                int slen = strlen(scs[i].str) + 1;  /* include null terminator */
+                memcpy(all_strs + all_offs, scs[i].str, slen);
+                all_offs += slen;
             }
         }
 

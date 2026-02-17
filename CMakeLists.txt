@@ -64,6 +64,12 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     set_source_files_properties(bench_avx.c PROPERTIES COMPILE_FLAGS "-mavx2 -mavx512f")
 endif()
 
+add_executable(bench_enum bench_enum.c cpu_cruncher.c task_buffers.c dict.c permut_types.c seedphrase.c fact.c os.c hashes.c)
+set_property(TARGET bench_enum PROPERTY C_STANDARD 99)
+target_include_directories(bench_enum PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(bench_enum pthread)
+target_compile_options(bench_enum PRIVATE -O2)
+
 add_executable(bench_breakdown bench_breakdown.c os.c)
 set_property(TARGET bench_breakdown PROPERTY C_STANDARD 99)
 target_include_directories(bench_breakdown PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
