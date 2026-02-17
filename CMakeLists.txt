@@ -50,3 +50,13 @@ target_compile_options(test_cpu_enumeration PRIVATE -fsanitize=address -fsanitiz
 target_link_options(test_cpu_enumeration PRIVATE -fsanitize=address -fsanitize=undefined)
 target_link_libraries(test_cpu_enumeration pthread)
 add_test(NAME cpu_enumeration COMMAND test_cpu_enumeration)
+
+add_executable(test_cruncher tests/test_cruncher.c
+    opencl_cruncher.c gpu_cruncher.c task_buffers.c hashes.c permut_types.c seedphrase.c fact.c os.c)
+set_property(TARGET test_cruncher PROPERTY C_STANDARD 99)
+target_include_directories(test_cruncher PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_cruncher PRIVATE -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
+target_link_options(test_cruncher PRIVATE -fsanitize=address -fsanitize=undefined)
+target_link_libraries(test_cruncher pthread ${OpenCL_LIBRARY})
+add_test(NAME cruncher COMMAND test_cruncher)
+set_tests_properties(cruncher PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
