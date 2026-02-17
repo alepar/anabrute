@@ -109,9 +109,9 @@ For each pair of dictionary entries, check if `counts[i] + counts[j] <= seed_phr
 
 Pack all character counts into a single uint32/uint64 with sentinel bits per letter. Each letter gets ceil(log2(max_count+1))+1 bits; the extra bit detects overflow. Adding a word's packed counts to the current state and AND-ing against a mask checks all letters for overflow in one operation — no per-letter comparison loop. For this phrase (max count 4, 12 unique chars) only 36 bits needed — fits in a single uint64. Source: Nine17/Loks forum thread.
 
-### CPU-8. Duplicate Permutation Elimination (TODO, HIGH)
+### CPU-8. Duplicate Permutation Elimination (N/A — Already Handled)
 
-When multiple dictionary words share the same character vector, we generate and MD5-hash all n! permutations including duplicates. For example, words with identical char_counts produce identical anagram strings when swapped. Generating only unique permutations avoids wasted MD5 cycles. Impact grows with word count — at 7 words with duplicate vectors, savings can be significant. Source: penartur5/DarkGray/alepar forum thread.
+Already handled by existing code. `dict.c` deduplicates entries by char_counts (anagram words merged into one entry with multiple strings). `recurse_combs` places same-string copies as fixed (negative offsets), not permutable. Only genuinely distinct strings become permutable slots. No wasted permutations.
 
 ---
 
