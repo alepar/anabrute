@@ -28,6 +28,7 @@ int read_dict(const char *filename, char_counts_strings *dict, uint32_t *dict_le
         if (strcmp(buflines[0], buflines[1])) {
             lineidx = 1-lineidx;
             if (char_counts_strings_create(str, &dict[*dict_length])) {
+                char_counts_strings_free(&dict[*dict_length]);
                 continue;
             }
 
@@ -46,6 +47,9 @@ int read_dict(const char *filename, char_counts_strings *dict, uint32_t *dict_le
                         fclose(dictFile);
                         return -2;
                     }
+                } else {
+                    /* Anagram duplicate: free the abandoned entry */
+                    char_counts_strings_free(&dict[*dict_length]);
                 }
 
                 if (char_counts_strings_addstring(&dict[i], str)) {
@@ -53,6 +57,9 @@ int read_dict(const char *filename, char_counts_strings *dict, uint32_t *dict_le
                     fclose(dictFile);
                     return -3;
                 }
+            } else {
+                /* Word not contained in seed phrase: free the abandoned entry */
+                char_counts_strings_free(&dict[*dict_length]);
             }
         }
     }

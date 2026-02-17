@@ -4,7 +4,14 @@
 #include <string.h>
 #include <unistd.h>
 #include "dict.h"
+#include "permut_types.h"
 #include "seedphrase.h"
+
+static void free_dict(char_counts_strings *dict, uint32_t dict_length) {
+    for (uint32_t i = 0; i < dict_length; i++) {
+        char_counts_strings_free(&dict[i]);
+    }
+}
 
 static void write_file(const char *path, const char *content) {
     FILE *f = fopen(path, "w");
@@ -36,6 +43,7 @@ void test_basic_loading(void) {
         assert(char_counts_contains(&seed, &dict[i].counts));
     }
 
+    free_dict(dict, dict_length);
     unlink(path);
     printf("  PASS: test_basic_loading\n");
 }
@@ -63,6 +71,7 @@ void test_filtering_invalid_chars(void) {
     assert(dict[0].strings_len == 1);
     assert(strcmp(dict[0].strings[0], "out") == 0);
 
+    free_dict(dict, dict_length);
     unlink(path);
     printf("  PASS: test_filtering_invalid_chars\n");
 }
@@ -93,6 +102,7 @@ void test_anagram_grouping(void) {
     assert(dict[group_idx].strings_len == 4);
     assert(dict[1 - group_idx].strings_len == 1);
 
+    free_dict(dict, dict_length);
     unlink(path);
     printf("  PASS: test_anagram_grouping\n");
 }
@@ -118,6 +128,7 @@ void test_short_lines_no_crash(void) {
     /* "out" should still be loaded despite empty lines */
     assert(dict_length == 1);
 
+    free_dict(dict, dict_length);
     unlink(path);
     printf("  PASS: test_short_lines_no_crash\n");
 }

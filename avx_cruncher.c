@@ -1,6 +1,7 @@
 #include "avx_cruncher.h"
 #include "os.h"
 #include "task_buffers.h"
+#include "md5_avx2.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -200,35 +201,90 @@ static bool heap_next(permut_task *task) {
 
 /* ---------- Process one task (all permutations) ---------- */
 
+static void check_hashes(cruncher_config *cfg, uint32_t *hash, uint32_t *key, int wcs) {
+    for (uint32_t ih = 0; ih < cfg->hashes_num; ih++) {
+        if (hash[0] == cfg->hashes[4 * ih] &&
+            hash[1] == cfg->hashes[4 * ih + 1] &&
+            hash[2] == cfg->hashes[4 * ih + 2] &&
+            hash[3] == cfg->hashes[4 * ih + 3]) {
+            PUTCHAR_SCALAR(key, wcs, 0);
+            memcpy(cfg->hashes_reversed + ih * MAX_STR_LENGTH / 4,
+                   key, MAX_STR_LENGTH);
+        }
+    }
+}
+
 static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
     if (task->i >= task->n) return;
     cruncher_config *cfg = actx->cfg;
 
+#if defined(__x86_64__) || defined(_M_AMD64)
+    /* Batch 8 permutations for AVX2 MD5 */
+    uint32_t keys[8][16];
+    int wcs_arr[8];
+    int batch = 0;
+
+    do {
+        wcs_arr[batch] = construct_string(task, keys[batch]);
+        batch++;
+
+        if (batch == 8) {
+            const uint32_t *key_ptrs[8];
+            uint32_t *hash_ptrs[8];
+            uint32_t hashes_out[8][4];
+            for (int i = 0; i < 8; i++) {
+                key_ptrs[i] = keys[i];
+                hash_ptrs[i] = hashes_out[i];
+            }
+
+            md5_avx2_x8(key_ptrs, hash_ptrs);
+
+            for (int i = 0; i < 8; i++) {
+                check_hashes(cfg, hashes_out[i], keys[i], wcs_arr[i]);
+            }
+            batch = 0;
+        }
+    } while (heap_next(task));
+
+    /* Tail: pad to 8 with duplicates of last key, hash all, check only real ones */
+    if (batch > 0) {
+        const uint32_t *key_ptrs[8];
+        uint32_t *hash_ptrs[8];
+        uint32_t hashes_out[8][4];
+        for (int i = 0; i < 8; i++) {
+            key_ptrs[i] = (i < batch) ? keys[i] : keys[batch - 1];
+            hash_ptrs[i] = hashes_out[i];
+        }
+        md5_avx2_x8(key_ptrs, hash_ptrs);
+        for (int i = 0; i < batch; i++) {
+            check_hashes(cfg, hashes_out[i], keys[i], wcs_arr[i]);
+        }
+    }
+#else
     do {
         uint32_t key[16];
         int wcs = construct_string(task, key);
-
         uint32_t hash[4];
         md5_scalar(key, hash);
-
-        /* Compare against all target hashes */
-        for (uint32_t ih = 0; ih < cfg->hashes_num; ih++) {
-            if (hash[0] == cfg->hashes[4 * ih] &&
-                hash[1] == cfg->hashes[4 * ih + 1] &&
-                hash[2] == cfg->hashes[4 * ih + 2] &&
-                hash[3] == cfg->hashes[4 * ih + 3]) {
-                /* Match found -- null-terminate over the 0x80 padding byte */
-                PUTCHAR_SCALAR(key, wcs, 0);
-                memcpy(cfg->hashes_reversed + ih * MAX_STR_LENGTH / 4,
-                       key, MAX_STR_LENGTH);
-            }
-        }
+        check_hashes(cfg, hash, key, wcs);
     } while (heap_next(task));
+#endif
 }
 
 /* ---------- Vtable functions ---------- */
 
 static uint32_t avx_probe(void) {
+#if defined(__x86_64__) || defined(_M_AMD64)
+    uint32_t cores = num_cpu_cores();
+    uint32_t suggest = cores > 1 ? cores - 1 : 1;
+    printf("  avx: %d cores available, suggesting %d thread(s)\n", cores, suggest);
+    return suggest;
+#else
+    return 0;
+#endif
+}
+
+static uint32_t scalar_probe(void) {
     uint32_t cores = num_cpu_cores();
     uint32_t suggest = cores > 1 ? cores - 1 : 1;
     printf("  cpu: %d cores available, suggesting %d thread(s)\n", cores, suggest);
@@ -262,7 +318,7 @@ static void *avx_run(void *ctx) {
 
         actx->consumed_anas += buf->num_anas;
         actx->consumed_bufs++;
-        tasks_buffer_free(buf);
+        tasks_buffers_recycle(actx->cfg->tasks_buffs, buf);
     }
 
     actx->task_time_end = current_micros();
@@ -292,6 +348,10 @@ static void avx_get_stats(void *ctx, float *busy_pct, float *anas_per_sec) {
     *anas_per_sec = (float)actx->consumed_anas / ((float)elapsed / 1000000.0f);
 }
 
+static uint64_t avx_get_total_anas(void *ctx) {
+    return ((avx_cruncher_ctx *)ctx)->consumed_anas;
+}
+
 static bool avx_is_running(void *ctx) {
     return ((avx_cruncher_ctx *)ctx)->is_running;
 }
@@ -301,11 +361,24 @@ static int avx_destroy(void *ctx) {
 }
 
 cruncher_ops avx_cruncher_ops = {
-    .name = "cpu",
+    .name = "avx",
     .probe = avx_probe,
     .create = avx_create,
     .run = avx_run,
     .get_stats = avx_get_stats,
+    .get_total_anas = avx_get_total_anas,
+    .is_running = avx_is_running,
+    .destroy = avx_destroy,
+    .ctx_size = sizeof(avx_cruncher_ctx),
+};
+
+cruncher_ops scalar_cruncher_ops = {
+    .name = "cpu",
+    .probe = scalar_probe,
+    .create = avx_create,
+    .run = avx_run,
+    .get_stats = avx_get_stats,
+    .get_total_anas = avx_get_total_anas,
     .is_running = avx_is_running,
     .destroy = avx_destroy,
     .ctx_size = sizeof(avx_cruncher_ctx),

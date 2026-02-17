@@ -13,12 +13,35 @@
 #include <unistd.h>
 
 #ifdef __APPLE__
-    #include "OpenCL/opencl.h"
     #include <event.h>
     #include <unitypes.h>
+    #ifdef HAVE_OPENCL
+        #include "OpenCL/opencl.h"
+    #endif
 #else
     #include <sys/time.h>
-    #include "CL/cl.h"
+    #ifdef HAVE_OPENCL
+        #include "CL/cl.h"
+    #endif
+#endif
+
+/* Provide stub OpenCL types when OpenCL is not available */
+#ifndef HAVE_OPENCL
+    typedef int cl_int;
+    typedef unsigned int cl_uint;
+    typedef void* cl_mem;
+    typedef void* cl_platform_id;
+    typedef void* cl_device_id;
+    typedef void* cl_context;
+    typedef void* cl_program;
+    typedef void* cl_command_queue;
+    typedef void* cl_kernel;
+    typedef void* cl_event;
+    typedef unsigned long cl_device_type;
+    typedef intptr_t cl_context_properties;
+    #define CL_SUCCESS 0
+    #define CL_DEVICE_TYPE_ALL 0xFFFFFFFF
+    #define CL_DEVICE_TYPE_CPU (1 << 1)
 #endif
 
 #define MAX_WORD_LENGTH 5

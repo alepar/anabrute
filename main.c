@@ -65,6 +65,7 @@ int main(int argc, char *argv[]) {
 #endif
         &opencl_cruncher_ops,
         &avx_cruncher_ops,
+        &scalar_cruncher_ops,
         NULL
     };
 
@@ -90,12 +91,31 @@ int main(int argc, char *argv[]) {
     uint32_t num_crunchers = 0;
 
     printf("Probing cruncher backends:\n");
+    bool have_gpu = false;
+    bool have_accel = false;  // any accelerated backend (gpu or avx)
     for (int bi = 0; all_backends[bi]; bi++) {
         cruncher_ops *ops = all_backends[bi];
+
+        // OpenCL: skip when a native GPU backend (Metal) is already active —
+        // on Apple Silicon, OpenCL runs on CPU and just contends.
+        if (have_gpu && ops == &opencl_cruncher_ops) {
+            printf("  %s: skipped (native GPU backend already active)\n", ops->name);
+            continue;
+        }
+
+        // Scalar CPU: only use as fallback when no accelerated backend is available.
+        if (have_accel && ops == &scalar_cruncher_ops) {
+            printf("  %s: skipped (accelerated backend already active)\n", ops->name);
+            continue;
+        }
+
         uint32_t count = ops->probe();
         if (!count) continue;
 
         printf("  %s: %d instance(s)\n", ops->name, count);
+
+        if (ops != &avx_cruncher_ops && ops != &scalar_cruncher_ops) have_gpu = true;
+        have_accel = true;
 
         for (uint32_t i = 0; i < count && num_crunchers < MAX_CRUNCHER_INSTANCES; i++) {
             cruncher_instance *ci = &crunchers[num_crunchers];
@@ -155,7 +175,7 @@ int main(int argc, char *argv[]) {
         for (int hi = 0; hi < hashes_num; hi++) {
             if (!hash_is_printed[hi] && hashes_reversed[hi * MAX_STR_LENGTH / 4]) {
                 hash_to_ascii(hashes + hi * 4, strbuf);
-                printf("%s:  %s\n", strbuf, (char *)(hashes_reversed + hi * MAX_STR_LENGTH / 4));
+                printf("\033[2K\r%s:  %s\n", strbuf, (char *)(hashes_reversed + hi * MAX_STR_LENGTH / 4));
                 hash_is_printed[hi] = true;
             }
         }
@@ -168,25 +188,44 @@ int main(int argc, char *argv[]) {
             if (progress < min) min = progress;
         }
 
-        // Aggregate stats from all crunchers
-        float overall_busy = 0, overall_anas_per_sec = 0;
-        for (uint32_t i = 0; i < num_crunchers; i++) {
-            float busy, aps;
-            crunchers[i].ops->get_stats(crunchers[i].ctx, &busy, &aps);
-            overall_busy += busy;
-            overall_anas_per_sec += aps;
-        }
-        if (num_crunchers > 0) overall_busy /= num_crunchers;
-        format_bignum(overall_anas_per_sec, strbuf, 1000);
-
         gettimeofday(&t1, 0);
         long elapsed_secs = t1.tv_sec-t0.tv_sec;
 
-        printf("%02ld:%02ld:%02ld | %d cpus: %d-%d/%d | %d buffs | %d crunchers, %sAna/s, %.0f%% effic\r",
+        // Per-backend stats
+        int pos = sprintf(strbuf, "%02ld:%02ld:%02ld | %d cpus: %d-%d/%d | %d buffs",
                elapsed_secs/3600, (elapsed_secs/60)%60, elapsed_secs%60,
                num_cpu_crunchers, min, max, dict_by_char_len[0],
-               tasks_buffs.num_ready,
-               num_crunchers, strbuf, overall_busy);
+               tasks_buffs.num_ready);
+
+        cruncher_ops *seen_ops[MAX_CRUNCHER_INSTANCES];
+        uint32_t seen_count = 0;
+        for (uint32_t i = 0; i < num_crunchers; i++) {
+            bool already = false;
+            for (uint32_t j = 0; j < seen_count; j++) {
+                if (seen_ops[j] == crunchers[i].ops) { already = true; break; }
+            }
+            if (already) continue;
+            seen_ops[seen_count++] = crunchers[i].ops;
+
+            float backend_busy = 0, backend_aps = 0;
+            uint32_t backend_count = 0;
+            for (uint32_t k = 0; k < num_crunchers; k++) {
+                if (crunchers[k].ops != crunchers[i].ops) continue;
+                float busy, aps;
+                crunchers[k].ops->get_stats(crunchers[k].ctx, &busy, &aps);
+                backend_busy += busy;
+                backend_aps += aps;
+                backend_count++;
+            }
+            backend_busy /= backend_count;
+
+            char aps_str[32];
+            format_bignum(backend_aps, aps_str, 1000);
+            pos += sprintf(strbuf + pos, " | %s(%d): %sAna/s %.0f%%",
+                           crunchers[i].ops->name, backend_count, aps_str, backend_busy);
+        }
+
+        printf("%s\r", strbuf);
         fflush(stdout);
 
         // if cpu's are done - send poison pill to crunchers
@@ -200,11 +239,11 @@ int main(int argc, char *argv[]) {
             for (int hi = 0; hi < hashes_num; hi++) {
                 if (!hash_is_printed[hi] && hashes_reversed[hi * MAX_STR_LENGTH / 4]) {
                     hash_to_ascii(hashes + hi * 4, strbuf);
-                    printf("%s:  %s\n", strbuf, (char *)(hashes_reversed + hi * MAX_STR_LENGTH / 4));
+                    printf("\033[2K\r%s:  %s\n", strbuf, (char *)(hashes_reversed + hi * MAX_STR_LENGTH / 4));
                     hash_is_printed[hi] = true;
                 }
             }
-            printf("\n");
+            printf("\033[2K\r\n");
             break;
         }
     }
@@ -215,6 +254,48 @@ int main(int argc, char *argv[]) {
     }
     for (uint32_t i = 0; i < num_crunchers; i++) {
         pthread_join(crunchers[i].thread, NULL);
+    }
+
+    // === final stats
+    gettimeofday(&t1, 0);
+    float wall_secs = (float)(t1.tv_sec - t0.tv_sec) + (float)(t1.tv_usec - t0.tv_usec) / 1000000.0f;
+
+    uint64_t grand_total_anas = 0;
+    // Per-backend totals (reuse seen_ops pattern)
+    {
+        cruncher_ops *seen[MAX_CRUNCHER_INSTANCES];
+        uint32_t sc = 0;
+        for (uint32_t i = 0; i < num_crunchers; i++) {
+            bool already = false;
+            for (uint32_t j = 0; j < sc; j++) {
+                if (seen[j] == crunchers[i].ops) { already = true; break; }
+            }
+            if (already) continue;
+            seen[sc++] = crunchers[i].ops;
+
+            uint64_t backend_anas = 0;
+            uint32_t backend_count = 0;
+            for (uint32_t k = 0; k < num_crunchers; k++) {
+                if (crunchers[k].ops != crunchers[i].ops) continue;
+                backend_anas += crunchers[k].ops->get_total_anas(crunchers[k].ctx);
+                backend_count++;
+            }
+            grand_total_anas += backend_anas;
+
+            char anas_str[32], aps_str[32];
+            format_bignum(backend_anas, anas_str, 1024);
+            format_bignum((uint64_t)(backend_anas / wall_secs), aps_str, 1000);
+            printf("  %s(%d): %s anas, %sAna/s avg\n",
+                   crunchers[i].ops->name, backend_count, anas_str, aps_str);
+        }
+    }
+
+    char total_str[32], total_aps_str[32];
+    format_bignum(grand_total_anas, total_str, 1024);
+    format_bignum((uint64_t)(grand_total_anas / wall_secs), total_aps_str, 1000);
+    printf("  total: %s anas in %.1fs, %sAna/s effective\n", total_str, wall_secs, total_aps_str);
+
+    for (uint32_t i = 0; i < num_crunchers; i++) {
         crunchers[i].ops->destroy(crunchers[i].ctx);
         free(crunchers[i].ctx);
     }

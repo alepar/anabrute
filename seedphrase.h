@@ -3,7 +3,7 @@
 
 #define CHARCOUNT 12
 
-const char* seed_phrase_str;
+extern const char* seed_phrase_str;
 
 int char_to_index(char c);
 

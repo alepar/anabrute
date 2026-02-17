@@ -21,6 +21,7 @@ typedef struct tasks_buffer_s {
 
 tasks_buffer* tasks_buffer_allocate();
 void tasks_buffer_free(tasks_buffer* buf);
+void tasks_buffer_reset(tasks_buffer* buf);
 bool tasks_buffer_isfull(tasks_buffer* buf);
 void tasks_buffer_add_task(tasks_buffer* buf, char* all_strs, int8_t* offsets);
 
@@ -28,6 +29,10 @@ typedef struct tasks_buffers_s {
     volatile tasks_buffer* arr[TASKS_BUFFERS_SIZE];
     volatile uint32_t num_ready;
     volatile bool is_closed;
+
+    // Free-list: returned buffers available for reuse (no malloc/free after warmup)
+    tasks_buffer* free_arr[TASKS_BUFFERS_SIZE];
+    uint32_t num_free;
 
     pthread_mutex_t mutex;
     pthread_cond_t inc_cond;
@@ -40,5 +45,7 @@ int tasks_buffers_add_buffer(tasks_buffers* buffs, tasks_buffer* buf);
 int tasks_buffers_get_buffer(tasks_buffers* buffs, tasks_buffer** buf);
 int tasks_buffers_close(tasks_buffers* buffs);
 int tasks_buffers_num_ready(tasks_buffers* buffs);
+tasks_buffer* tasks_buffers_obtain(tasks_buffers* buffs);   // get from free-list or allocate
+void tasks_buffers_recycle(tasks_buffers* buffs, tasks_buffer* buf);  // return to free-list
 
 #endif //ANABRUTE_TASK_BUFFERS_H

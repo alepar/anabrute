@@ -1,3 +1,6 @@
+#include "common.h"
+#ifdef HAVE_OPENCL
+
 #include <string.h>
 #include <stdio.h>
 
@@ -196,7 +199,7 @@ void* run_gpu_cruncher_thread(void *ptr) {
         if (src_buf != NULL && src_idx >= src_buf->num_tasks && tasks_buffers_num_ready(ctx->tasks_buffs)) {
             // fetch new buffer from queue
             ctx->consumed_bufs++;
-            tasks_buffer_free(src_buf);
+            tasks_buffers_recycle(ctx->tasks_buffs, src_buf);
             errcode = tasks_buffers_get_buffer(ctx->tasks_buffs, &src_buf);;
             ret_iferr(errcode, "failed to get first buffer");
             src_idx = 0;
@@ -355,3 +358,5 @@ cl_int krnl_permut_read_tasks(krnl_permut *krnl, tasks_buffer* buf) {
 
     return errcode;
 }
+
+#endif /* HAVE_OPENCL */

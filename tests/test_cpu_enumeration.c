@@ -68,10 +68,15 @@ static uint32_t run_cruncher_with_dict(const char *dict_path, permut_task **out_
         memcpy(*out_tasks + total_tasks, buf->permut_tasks,
                buf->num_tasks * sizeof(permut_task));
         total_tasks += buf->num_tasks;
-        tasks_buffer_free(buf);
+        tasks_buffers_recycle(&tasks_buffs, buf);
     }
 
     tasks_buffers_free(&tasks_buffs);
+
+    for (uint32_t i = 0; i < dict_length; i++) {
+        char_counts_strings_free(&dict[i]);
+    }
+
     return total_tasks;
 }
 

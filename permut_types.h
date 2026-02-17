@@ -41,5 +41,6 @@ void char_counts_copy(char_counts *src, char_counts *dst);
 
 bool char_counts_strings_create(const char *s, char_counts_strings *ccs);
 bool char_counts_strings_addstring(char_counts_strings *ccs, const char *s);
+void char_counts_strings_free(char_counts_strings *ccs);
 
 #endif

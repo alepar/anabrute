@@ -1,4 +1,5 @@
 #include "task_buffers.h"
+#include "fact.h"
 
 tasks_buffer* tasks_buffer_allocate() {
     tasks_buffer* buffer = calloc(1, sizeof(tasks_buffer));
@@ -11,8 +12,15 @@ tasks_buffer* tasks_buffer_allocate() {
 }
 
 void tasks_buffer_free(tasks_buffer* buf) {
-    free(buf->permut_tasks);
-    free(buf);
+    if (buf) {
+        free(buf->permut_tasks);
+        free(buf);
+    }
+}
+
+void tasks_buffer_reset(tasks_buffer* buf) {
+    buf->num_tasks = 0;
+    buf->num_anas = 0;
 }
 
 bool tasks_buffer_isfull(tasks_buffer* buf) {
@@ -44,14 +52,17 @@ void tasks_buffer_add_task(tasks_buffer* buf, char* all_strs, int8_t* offsets) {
     memset(&dst_task->c, 0, 8);
 
     buf->num_tasks++;
+    buf->num_anas += fact(permutable_count);
 }
 
 int tasks_buffers_create(tasks_buffers* buffs) {
     buffs->num_ready = 0;
+    buffs->num_free = 0;
     buffs->is_closed = false;
 
     for (int i=0; i<TASKS_BUFFERS_SIZE; i++) {
         buffs->arr[i] = NULL;
+        buffs->free_arr[i] = NULL;
     }
 
     int errcode;
@@ -66,6 +77,20 @@ int tasks_buffers_create(tasks_buffers* buffs) {
 }
 
 int tasks_buffers_free(tasks_buffers* buffs) {
+    // Free any buffers still in the ready queue
+    for (int i = 0; i < TASKS_BUFFERS_SIZE; i++) {
+        if (buffs->arr[i]) {
+            tasks_buffer_free((tasks_buffer *)buffs->arr[i]);
+            buffs->arr[i] = NULL;
+        }
+    }
+    // Free any buffers in the free-list
+    for (uint32_t i = 0; i < buffs->num_free; i++) {
+        tasks_buffer_free(buffs->free_arr[i]);
+        buffs->free_arr[i] = NULL;
+    }
+    buffs->num_free = 0;
+
     int errcode = 0;
     errcode |= pthread_mutex_destroy(&buffs->mutex);
     errcode |= pthread_cond_destroy(&buffs->inc_cond);
@@ -172,4 +197,31 @@ int tasks_buffers_num_ready(tasks_buffers* buffs) {
     }
 
     return buffs->num_ready;
+}
+
+tasks_buffer* tasks_buffers_obtain(tasks_buffers* buffs) {
+    pthread_mutex_lock(&buffs->mutex);
+    tasks_buffer *buf = NULL;
+    if (buffs->num_free > 0) {
+        buf = buffs->free_arr[--buffs->num_free];
+    }
+    pthread_mutex_unlock(&buffs->mutex);
+
+    if (buf) {
+        tasks_buffer_reset(buf);
+        return buf;
+    }
+    return tasks_buffer_allocate();
+}
+
+void tasks_buffers_recycle(tasks_buffers* buffs, tasks_buffer* buf) {
+    pthread_mutex_lock(&buffs->mutex);
+    if (buffs->num_free < TASKS_BUFFERS_SIZE) {
+        buffs->free_arr[buffs->num_free++] = buf;
+        pthread_mutex_unlock(&buffs->mutex);
+    } else {
+        pthread_mutex_unlock(&buffs->mutex);
+        free(buf->permut_tasks);
+        free(buf);
+    }
 }

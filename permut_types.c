@@ -70,6 +70,15 @@ bool char_counts_strings_addstring(char_counts_strings *ccs, const char *s) {
     return ccs->strings_len > MAX_STRINGS_SIZE;
 }
 
+void char_counts_strings_free(char_counts_strings *ccs) {
+    for (int i = 0; i < ccs->strings_len; i++) {
+        free(ccs->strings[i]);
+    }
+    free(ccs->strings);
+    ccs->strings = NULL;
+    ccs->strings_len = 0;
+}
+
 bool char_counts_contains(char_counts* cc, char_counts* subcc) {
     if (cc->length < subcc->length) {
         return false;

@@ -1,4 +1,7 @@
 #include "opencl_cruncher.h"
+
+#ifdef HAVE_OPENCL
+
 #include "gpu_cruncher.h"
 
 #define MAX_OPENCL_DEVICES 16
@@ -66,6 +69,10 @@ static void opencl_get_stats(void *ctx, float *busy_pct, float *anas_per_sec) {
     gpu_cruncher_get_stats(ctx, busy_pct, anas_per_sec);
 }
 
+static uint64_t opencl_get_total_anas(void *ctx) {
+    return ((gpu_cruncher_ctx *)ctx)->consumed_anas;
+}
+
 static bool opencl_is_running(void *ctx) {
     return ((gpu_cruncher_ctx *)ctx)->is_running;
 }
@@ -80,7 +87,20 @@ cruncher_ops opencl_cruncher_ops = {
     .create = opencl_create,
     .run = opencl_run,
     .get_stats = opencl_get_stats,
+    .get_total_anas = opencl_get_total_anas,
     .is_running = opencl_is_running,
     .destroy = opencl_destroy,
     .ctx_size = sizeof(gpu_cruncher_ctx),
 };
+
+#else /* !HAVE_OPENCL */
+
+static uint32_t opencl_probe_stub(void) { return 0; }
+
+cruncher_ops opencl_cruncher_ops = {
+    .name = "opencl",
+    .probe = opencl_probe_stub,
+    .ctx_size = 0,
+};
+
+#endif /* HAVE_OPENCL */
