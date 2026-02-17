@@ -6,6 +6,12 @@
 #include "dict.h"
 #include "seedphrase.h"
 
+static int cmp_ccs_length_desc(const void *a, const void *b) {
+    const char_counts_strings *ca = *(const char_counts_strings *const *)a;
+    const char_counts_strings *cb = *(const char_counts_strings *const *)b;
+    return (int)cb->counts.length - (int)ca->counts.length;
+}
+
 static void write_file(const char *path, const char *content) {
     FILE *f = fopen(path, "w");
     assert(f && "failed to create test file");
@@ -39,13 +45,21 @@ static uint32_t run_cruncher_with_dict(const char *dict_path, permut_task **out_
         }
     }
 
+    /* Sort by descending length (same as main.c) */
+    for (int ci = 0; ci < CHARCOUNT; ci++) {
+        if (dict_by_char_len[ci] > 1) {
+            qsort(dict_by_char[ci], dict_by_char_len[ci], sizeof(char_counts_strings*), cmp_ccs_length_desc);
+        }
+    }
+
     /* Create tasks_buffers */
     tasks_buffers tasks_buffs;
     tasks_buffers_create(&tasks_buffs);
 
     /* Run CPU cruncher single-threaded */
+    volatile uint32_t shared_l0_counter = 0;
     cpu_cruncher_ctx ctx;
-    cpu_cruncher_ctx_create(&ctx, 0, 1, &seed, &dict_by_char, dict_by_char_len, &tasks_buffs);
+    cpu_cruncher_ctx_create(&ctx, 0, 1, &seed, &dict_by_char, dict_by_char_len, &tasks_buffs, &shared_l0_counter);
     run_cpu_cruncher_thread(&ctx);
 
     /* Close buffers so get_buffer returns NULL when empty */

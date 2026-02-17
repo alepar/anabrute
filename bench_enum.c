@@ -38,14 +38,21 @@ static void *consumer_thread(void *arg) {
 static char_counts_strings *dict_by_char[CHARCOUNT][MAX_DICT_SIZE];
 static int dict_by_char_len[CHARCOUNT];
 
+static int cmp_ccs_length_desc(const void *a, const void *b) {
+    const char_counts_strings *ca = *(const char_counts_strings *const *)a;
+    const char_counts_strings *cb = *(const char_counts_strings *const *)b;
+    return (int)cb->counts.length - (int)ca->counts.length;
+}
+
 static double run_benchmark(int num_threads, char_counts *seed, double baseline_secs) {
     tasks_buffers buffs;
     tasks_buffers_create(&buffs);
 
     /* Create CPU cruncher contexts */
+    volatile uint32_t shared_l0_counter = 0;
     cpu_cruncher_ctx ctxs[num_threads];
     for (int i = 0; i < num_threads; i++) {
-        cpu_cruncher_ctx_create(&ctxs[i], i, num_threads, seed, &dict_by_char, dict_by_char_len, &buffs);
+        cpu_cruncher_ctx_create(&ctxs[i], i, num_threads, seed, &dict_by_char, dict_by_char_len, &buffs, &shared_l0_counter);
     }
 
     /* Start consumer */
@@ -115,6 +122,13 @@ int main(int argc, char *argv[]) {
                 dict_by_char[ci][dict_by_char_len[ci]++] = &dict[i];
                 break;
             }
+        }
+    }
+
+    /* Sort each bucket by descending word length for work-stealing balance */
+    for (int ci = 0; ci < CHARCOUNT; ci++) {
+        if (dict_by_char_len[ci] > 1) {
+            qsort(dict_by_char[ci], dict_by_char_len[ci], sizeof(char_counts_strings*), cmp_ccs_length_desc);
         }
     }
 

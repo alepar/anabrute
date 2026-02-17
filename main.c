@@ -22,6 +22,12 @@ void format_bignum(uint64_t value, char *dst, uint16_t div) {
     sprintf(dst, "%lu%s", value, size_suffixes[divs]);
 }
 
+static int cmp_ccs_length_desc(const void *a, const void *b) {
+    const char_counts_strings *ca = *(const char_counts_strings *const *)a;
+    const char_counts_strings *cb = *(const char_counts_strings *const *)b;
+    return (int)cb->counts.length - (int)ca->counts.length;
+}
+
 int main(int argc, char *argv[]) {
 
     // === read dict
@@ -45,7 +51,12 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-    // maybe resort dict_by_char? by length or char occurs?
+    // Sort each bucket by descending word length for better work-stealing balance
+    for (int ci = 0; ci < CHARCOUNT; ci++) {
+        if (dict_by_char_len[ci] > 1) {
+            qsort(dict_by_char[ci], dict_by_char_len[ci], sizeof(char_counts_strings*), cmp_ccs_length_desc);
+        }
+    }
 
     // === setup shared cpu/gpu cruncher stuff
 
@@ -131,9 +142,10 @@ int main(int argc, char *argv[]) {
     // === create cpu cruncher contexts
 
     uint32_t num_cpu_crunchers = num_cpu_cores();
+    volatile uint32_t shared_l0_counter = 0;
     cpu_cruncher_ctx cpu_cruncher_ctxs[num_cpu_crunchers];
     for (uint32_t id=0; id<num_cpu_crunchers; id++) {
-        cpu_cruncher_ctx_create(cpu_cruncher_ctxs+id, id, num_cpu_crunchers, &seed_phrase, &dict_by_char, dict_by_char_len, &tasks_buffs);
+        cpu_cruncher_ctx_create(cpu_cruncher_ctxs+id, id, num_cpu_crunchers, &seed_phrase, &dict_by_char, dict_by_char_len, &tasks_buffs, &shared_l0_counter);
     }
 
     // === create and start cruncher threads
@@ -180,22 +192,18 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // CPU progress
-        int min=dict_by_char_len[0], max=0;
-        for (int i=0; i<num_cpu_crunchers; i++) {
-            const int progress = cpu_cruncher_ctxs[i].progress_l0_index;
-            if (progress > max) max = progress;
-            if (progress < min) min = progress;
-        }
+        // CPU progress (shared atomic counter)
+        uint32_t cpu_progress = shared_l0_counter;
+        if (cpu_progress > (uint32_t)dict_by_char_len[0]) cpu_progress = dict_by_char_len[0];
 
         gettimeofday(&t1, 0);
         long elapsed_secs = t1.tv_sec-t0.tv_sec;
 
         // Per-backend stats
-        int pos = sprintf(strbuf, "%02ld:%02ld:%02ld | %d cpus: %d-%d/%d | %d buffs",
+        int pos = sprintf(strbuf, "%02ld:%02ld:%02ld | %d cpus: %u/%d | %d buffs",
                elapsed_secs/3600, (elapsed_secs/60)%60, elapsed_secs%60,
-               num_cpu_crunchers, min, max, dict_by_char_len[0],
-               tasks_buffs.num_ready);
+               num_cpu_crunchers, cpu_progress, dict_by_char_len[0],
+               tasks_buffs.ring_count);
 
         cruncher_ops *seen_ops[MAX_CRUNCHER_INSTANCES];
         uint32_t seen_count = 0;
@@ -228,8 +236,15 @@ int main(int argc, char *argv[]) {
         printf("%s\r", strbuf);
         fflush(stdout);
 
-        // if cpu's are done - send poison pill to crunchers
-        if (min >= dict_by_char_len[0] && max >= dict_by_char_len[0]) {
+        // if all cpu threads are done - send poison pill to crunchers
+        bool cpus_done = true;
+        for (uint32_t i = 0; i < num_cpu_crunchers; i++) {
+            if (cpu_cruncher_ctxs[i].progress_l0_index < dict_by_char_len[0]) {
+                cpus_done = false;
+                break;
+            }
+        }
+        if (cpus_done) {
             tasks_buffers_close(&tasks_buffs);
         }
 

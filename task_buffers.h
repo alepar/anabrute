@@ -26,8 +26,11 @@ bool tasks_buffer_isfull(tasks_buffer* buf);
 void tasks_buffer_add_task(tasks_buffer* buf, char* all_strs, int8_t* offsets);
 
 typedef struct tasks_buffers_s {
-    volatile tasks_buffer* arr[TASKS_BUFFERS_SIZE];
-    volatile uint32_t num_ready;
+    // Ring buffer for ready tasks (O(1) insert/remove)
+    tasks_buffer* ring[TASKS_BUFFERS_SIZE];
+    uint32_t ring_head;    // producer writes at ring[head % SIZE]
+    uint32_t ring_tail;    // consumer reads at ring[tail % SIZE]
+    volatile uint32_t ring_count;  // occupied slots (volatile for lock-free peek)
     volatile bool is_closed;
 
     // Free-list: returned buffers available for reuse (no malloc/free after warmup)
@@ -35,8 +38,8 @@ typedef struct tasks_buffers_s {
     uint32_t num_free;
 
     pthread_mutex_t mutex;
-    pthread_cond_t inc_cond;
-    pthread_cond_t dec_cond;
+    pthread_cond_t not_full;
+    pthread_cond_t not_empty;
 } tasks_buffers;
 
 int tasks_buffers_create(tasks_buffers* buffs);

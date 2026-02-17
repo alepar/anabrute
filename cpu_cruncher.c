@@ -3,10 +3,11 @@
 
 void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_id, uint32_t num_cpu_crunchers,
                              char_counts* seed_phrase, char_counts_strings* (*dict_by_char)[CHARCOUNT][MAX_DICT_SIZE], int* dict_by_char_len,
-                             tasks_buffers* tasks_buffs)
+                             tasks_buffers* tasks_buffs, volatile uint32_t *shared_l0_counter)
 {
     cruncher->num_cpu_crunchers = num_cpu_crunchers;
     cruncher->cpu_cruncher_id = cpu_cruncher_id;
+    cruncher->shared_l0_counter = shared_l0_counter;
 
     cruncher->seed_phrase = seed_phrase;
     cruncher->dict_by_char = dict_by_char;
@@ -16,7 +17,33 @@ void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_i
     for (int i = 0; i <= MAX_WORD_LENGTH; i++) {
         cruncher->local_buffers[i] = NULL;
     }
+    cruncher->local_free_count = 0;
     cruncher->tasks_buffs = tasks_buffs;
+}
+
+static tasks_buffer* cpu_obtain_buffer(cpu_cruncher_ctx *ctx) {
+    // Check local cache first (no lock)
+    if (ctx->local_free_count > 0) {
+        tasks_buffer *buf = ctx->local_free[--ctx->local_free_count];
+        tasks_buffer_reset(buf);
+        return buf;
+    }
+
+    // Bulk grab from global free-list
+    pthread_mutex_lock(&ctx->tasks_buffs->mutex);
+    while (ctx->local_free_count < LOCAL_FREE_CAP && ctx->tasks_buffs->num_free > 0) {
+        ctx->local_free[ctx->local_free_count++] = ctx->tasks_buffs->free_arr[--ctx->tasks_buffs->num_free];
+    }
+    pthread_mutex_unlock(&ctx->tasks_buffs->mutex);
+
+    if (ctx->local_free_count > 0) {
+        tasks_buffer *buf = ctx->local_free[--ctx->local_free_count];
+        tasks_buffer_reset(buf);
+        return buf;
+    }
+
+    // Nothing available — allocate fresh
+    return tasks_buffer_allocate();
 }
 
 int submit_tasks(cpu_cruncher_ctx* ctx, int8_t permut[], int permut_len, char *all_strs) {
@@ -39,7 +66,7 @@ int submit_tasks(cpu_cruncher_ctx* ctx, int8_t permut[], int permut_len, char *a
     }
 
     if (*bufp == NULL) {
-        *bufp = tasks_buffers_obtain(ctx->tasks_buffs);
+        *bufp = cpu_obtain_buffer(ctx);
         ret_iferr(!*bufp, "cpu cruncher failed to allocate local buffer");
     }
 
@@ -179,34 +206,53 @@ int recurse_dict_words(cpu_cruncher_ctx* ctx, char_counts *remainder, int curcha
             return 0;
         }
 
-    int step = 1;
-    if (stack_len == 0) {
-        step = ctx->num_cpu_crunchers;
-    }
-
     int errcode=0;
-    for (int i=curdictidx; i<ctx->dict_by_char_len[curchar]; i+=step) {
-        if (stack_len == 0) {
+
+    if (stack_len == 0) {
+        // Atomic work stealing: each thread grabs the next available index
+        uint32_t i;
+        while ((i = __sync_fetch_and_add(ctx->shared_l0_counter, 1)) < (uint32_t)ctx->dict_by_char_len[curchar]) {
             ctx->progress_l0_index = i;
-        }
 
-        stack[stack_len].ccs = (*ctx->dict_by_char)[curchar][i];
+            stack[0].ccs = (*ctx->dict_by_char)[curchar][i];
 
-        char_counts next_remainder;
-        char_counts_copy(remainder, &next_remainder);
-        for (uint8_t ccs_count=1; char_counts_subtract(&next_remainder, &(*ctx->dict_by_char)[curchar][i]->counts); ccs_count++) {
-            stack[stack_len].count = ccs_count;
+            char_counts next_remainder;
+            char_counts_copy(remainder, &next_remainder);
+            for (uint8_t ccs_count=1; char_counts_subtract(&next_remainder, &(*ctx->dict_by_char)[curchar][i]->counts); ccs_count++) {
+                stack[0].count = ccs_count;
 
-            int next_char = curchar;
-            int next_idx = i+1;
+                int next_char = curchar;
+                int next_idx = i+1;
 
-            if(next_remainder.counts[next_char] == 0) {
-                next_char++;
-                next_idx = 0;
+                if(next_remainder.counts[next_char] == 0) {
+                    next_char++;
+                    next_idx = 0;
+                }
+
+                errcode = recurse_dict_words(ctx, &next_remainder, next_char, next_idx, stack, 1, scs);
+                if (errcode) return errcode;
             }
+        }
+    } else {
+        for (int i=curdictidx; i<ctx->dict_by_char_len[curchar]; i++) {
+            stack[stack_len].ccs = (*ctx->dict_by_char)[curchar][i];
 
-            errcode = recurse_dict_words(ctx, &next_remainder, next_char, next_idx, stack, stack_len + 1, scs);
-            if (errcode) return errcode;
+            char_counts next_remainder;
+            char_counts_copy(remainder, &next_remainder);
+            for (uint8_t ccs_count=1; char_counts_subtract(&next_remainder, &(*ctx->dict_by_char)[curchar][i]->counts); ccs_count++) {
+                stack[stack_len].count = ccs_count;
+
+                int next_char = curchar;
+                int next_idx = i+1;
+
+                if(next_remainder.counts[next_char] == 0) {
+                    next_char++;
+                    next_idx = 0;
+                }
+
+                errcode = recurse_dict_words(ctx, &next_remainder, next_char, next_idx, stack, stack_len + 1, scs);
+                if (errcode) return errcode;
+            }
         }
     }
 
@@ -223,7 +269,7 @@ void* run_cpu_cruncher_thread(void *ptr) {
     stack_item stack[20];
     string_and_count scs[120];
 
-    int errcode = recurse_dict_words(ctx, &local_remainder, 0, ctx->cpu_cruncher_id, stack, 0, scs);
+    int errcode = recurse_dict_words(ctx, &local_remainder, 0, 0, stack, 0, scs);
 
     // Flush all per-N buffers that have remaining tasks
     for (int n = 0; n <= MAX_WORD_LENGTH; n++) {
@@ -233,6 +279,12 @@ void* run_cpu_cruncher_thread(void *ptr) {
             ctx->local_buffers[n] = NULL;
         }
     }
+
+    // Free local free-list buffers
+    for (int i = 0; i < ctx->local_free_count; i++) {
+        tasks_buffer_free(ctx->local_free[i]);
+    }
+    ctx->local_free_count = 0;
 
     ctx->progress_l0_index = ctx->dict_by_char_len[0]; // mark this cpu cruncher as done
 
