@@ -18,7 +18,7 @@ typedef struct cpu_cruncher_ctx_s {
     // progress stats
     volatile int progress_l0_index;
 
-    tasks_buffer* local_buffer;
+    tasks_buffer* local_buffers[MAX_WORD_LENGTH+1];  // per-N buffers for uniform SIMD group dispatch
 
     // output
     tasks_buffers* tasks_buffs;

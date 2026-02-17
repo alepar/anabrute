@@ -14,6 +14,7 @@ typedef struct {
     id<MTLComputePipelineState> pipeline;
     id<MTLBuffer> buf_hashes;           // hashes (read-only for GPU)
     id<MTLBuffer> buf_hashes_reversed;  // shared output (GPU writes matches)
+    id<MTLBuffer> buf_tasks;            // reusable task buffer (pre-allocated at max size)
 
     volatile bool is_running;
     volatile uint64_t consumed_bufs;
@@ -123,6 +124,14 @@ static int metal_create(void *ctx, cruncher_config *cfg, uint32_t instance_id) {
         }
         memset([mctx->buf_hashes_reversed contents], 0, cfg->hashes_num * MAX_STR_LENGTH);
 
+        /* Pre-allocate reusable task buffer at max size */
+        mctx->buf_tasks = [mctx->device newBufferWithLength:PERMUT_TASKS_IN_KERNEL_TASK * sizeof(permut_task)
+                                                     options:MTLResourceStorageModeShared];
+        if (mctx->buf_tasks == nil) {
+            fprintf(stderr, "FATAL: failed to create Metal task buffer\n");
+            return -1;
+        }
+
         return 0;
     }
 }
@@ -141,61 +150,42 @@ static void *metal_run(void *ctx) {
             uint32_t num_tasks = buf->num_tasks;
             uint64_t buf_num_anas = buf->num_anas;
 
-            /* Create task buffer for GPU */
-            id<MTLBuffer> buf_tasks = [mctx->device newBufferWithBytes:buf->permut_tasks
-                                                                length:num_tasks * sizeof(permut_task)
-                                                               options:MTLResourceStorageModeShared];
+            /* Copy tasks into pre-allocated GPU buffer */
+            memcpy([mctx->buf_tasks contents], buf->permut_tasks, num_tasks * sizeof(permut_task));
 
-            /* Re-dispatch loop: keep running until all tasks have i >= n */
-            bool has_incomplete = true;
-            while (has_incomplete) {
-                @autoreleasepool {
-                    uint64_t dispatch_start = current_micros();
-                    uint64_t dispatch_anas = buf_num_anas;
+            /* Single dispatch — Metal has no GPU watchdog timeout on macOS,
+             * so we set iters_per_task = UINT32_MAX to always run to completion.
+             * With MAX_WORD_LENGTH=5, max n=5, fact(5)=120 — tasks always finish. */
+            @autoreleasepool {
+                uint64_t dispatch_start = current_micros();
 
-                    /* Encode and dispatch */
-                    id<MTLCommandBuffer> cmdBuf = [mctx->queue commandBuffer];
-                    id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
+                id<MTLCommandBuffer> cmdBuf = [mctx->queue commandBuffer];
+                id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
 
-                    [encoder setComputePipelineState:mctx->pipeline];
-                    [encoder setBuffer:buf_tasks offset:0 atIndex:0];
-                    uint32_t iters_per_task = MAX_ITERS_IN_KERNEL_TASK;
-                    [encoder setBytes:&iters_per_task length:sizeof(iters_per_task) atIndex:1];
-                    [encoder setBuffer:mctx->buf_hashes offset:0 atIndex:2];
-                    uint32_t hashes_num = mctx->cfg->hashes_num;
-                    [encoder setBytes:&hashes_num length:sizeof(hashes_num) atIndex:3];
-                    [encoder setBuffer:mctx->buf_hashes_reversed offset:0 atIndex:4];
+                [encoder setComputePipelineState:mctx->pipeline];
+                [encoder setBuffer:mctx->buf_tasks offset:0 atIndex:0];
+                uint32_t iters_per_task = UINT32_MAX;
+                [encoder setBytes:&iters_per_task length:sizeof(iters_per_task) atIndex:1];
+                [encoder setBuffer:mctx->buf_hashes offset:0 atIndex:2];
+                uint32_t hashes_num = mctx->cfg->hashes_num;
+                [encoder setBytes:&hashes_num length:sizeof(hashes_num) atIndex:3];
+                [encoder setBuffer:mctx->buf_hashes_reversed offset:0 atIndex:4];
 
-                    MTLSize gridSize = MTLSizeMake(num_tasks, 1, 1);
-                    NSUInteger threadGroupSize = MIN(mctx->pipeline.maxTotalThreadsPerThreadgroup, (NSUInteger)num_tasks);
-                    MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
-                    [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
+                MTLSize gridSize = MTLSizeMake(num_tasks, 1, 1);
+                NSUInteger threadGroupSize = MIN(mctx->pipeline.maxTotalThreadsPerThreadgroup, (NSUInteger)num_tasks);
+                MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
+                [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadgroupSize];
 
-                    [encoder endEncoding];
-                    [cmdBuf commit];
-                    [cmdBuf waitUntilCompleted];
+                [encoder endEncoding];
+                [cmdBuf commit];
+                [cmdBuf waitUntilCompleted];
 
-                    uint64_t dispatch_end = current_micros();
+                uint64_t dispatch_end = current_micros();
 
-                    /* Check if any tasks need re-dispatch */
-                    permut_task *tasks_out = (permut_task *)[buf_tasks contents];
-                    has_incomplete = false;
-                    buf_num_anas = 0;
-                    for (uint32_t i = 0; i < num_tasks; i++) {
-                        if (tasks_out[i].i < tasks_out[i].n) {
-                            has_incomplete = true;
-                            uint64_t iters_left = fact(tasks_out[i].n) - tasks_out[i].iters_done;
-                            buf_num_anas += iters_left > MAX_ITERS_IN_KERNEL_TASK ? MAX_ITERS_IN_KERNEL_TASK : iters_left;
-                        }
-                    }
-
-                    /* Record windowed stats for this dispatch (after computing
-                     * next-dispatch anas, so dispatch_anas reflects THIS dispatch) */
-                    mctx->times_start[mctx->times_idx] = dispatch_start;
-                    mctx->times_end[mctx->times_idx] = dispatch_end;
-                    mctx->times_anas[mctx->times_idx] = dispatch_anas;
-                    mctx->times_idx = (mctx->times_idx + 1) % TIMES_WINDOW_LENGTH;
-                } /* @autoreleasepool — drains command buffer/encoder each dispatch */
+                mctx->times_start[mctx->times_idx] = dispatch_start;
+                mctx->times_end[mctx->times_idx] = dispatch_end;
+                mctx->times_anas[mctx->times_idx] = buf_num_anas;
+                mctx->times_idx = (mctx->times_idx + 1) % TIMES_WINDOW_LENGTH;
             }
 
             mctx->consumed_anas += buf->num_anas;
@@ -204,7 +194,7 @@ static void *metal_run(void *ctx) {
             /* Merge results to shared buffer */
             merge_hashes_reversed(mctx);
 
-            tasks_buffer_free(buf);
+            tasks_buffers_recycle(mctx->cfg->tasks_buffs, buf);
         }
 
         /* Final merge */
@@ -247,6 +237,10 @@ static void metal_get_stats(void *ctx, float *busy_pct, float *anas_per_sec) {
     *anas_per_sec = (float)calculated_anas / ((float)wall_time / 1000000.0f);
 }
 
+static uint64_t metal_get_total_anas(void *ctx) {
+    return ((metal_cruncher_ctx *)ctx)->consumed_anas;
+}
+
 static bool metal_is_running(void *ctx) {
     return ((metal_cruncher_ctx *)ctx)->is_running;
 }
@@ -255,6 +249,7 @@ static int metal_destroy(void *ctx) {
     metal_cruncher_ctx *mctx = ctx;
     mctx->buf_hashes = nil;
     mctx->buf_hashes_reversed = nil;
+    mctx->buf_tasks = nil;
     mctx->pipeline = nil;
     mctx->queue = nil;
     mctx->device = nil;
@@ -267,6 +262,7 @@ cruncher_ops metal_cruncher_ops = {
     .create = metal_create,
     .run = metal_run,
     .get_stats = metal_get_stats,
+    .get_total_anas = metal_get_total_anas,
     .is_running = metal_is_running,
     .destroy = metal_destroy,
     .ctx_size = sizeof(metal_cruncher_ctx),

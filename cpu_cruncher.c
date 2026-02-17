@@ -13,42 +13,37 @@ void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_i
     cruncher->dict_by_char_len = dict_by_char_len;
 
     cruncher->progress_l0_index = 0;
-    cruncher->local_buffer = NULL;
+    for (int i = 0; i <= MAX_WORD_LENGTH; i++) {
+        cruncher->local_buffers[i] = NULL;
+    }
     cruncher->tasks_buffs = tasks_buffs;
 }
 
 int submit_tasks(cpu_cruncher_ctx* ctx, int8_t permut[], int permut_len, char *all_strs) {
-/*
-    if (ctx->cpu_cruncher_id == 0) {
-        for (int j=0; j<permut_len; j++) {
-            char offset = permut[j];
-            if (offset < 0) {
-                offset = -offset;
-            } else {
-                printf("*");
-            }
-            offset--;
-            printf("%s ", all_strs+offset);
-        }
-        printf("\n");
-    }
-*/
-
     permut[permut_len] = 0;
 
+    // Count permutable words to determine N for buffer routing
+    int n = 0;
+    for (int i = 0; permut[i]; i++) {
+        if (permut[i] > 0) n++;
+    }
+    if (n > MAX_WORD_LENGTH) n = MAX_WORD_LENGTH;  // safety clamp
+
+    tasks_buffer **bufp = &ctx->local_buffers[n];
+
     int errcode = 0;
-    if (ctx->local_buffer != NULL && tasks_buffer_isfull(ctx->local_buffer)) {
-        errcode = tasks_buffers_add_buffer(ctx->tasks_buffs, ctx->local_buffer);
+    if (*bufp != NULL && tasks_buffer_isfull(*bufp)) {
+        errcode = tasks_buffers_add_buffer(ctx->tasks_buffs, *bufp);
         ret_iferr(errcode, "cpu cruncher failed to pass buffer to gpu crunchers");
-        ctx->local_buffer = NULL;
+        *bufp = NULL;
     }
 
-    if (ctx->local_buffer == NULL) {
-        ctx->local_buffer = tasks_buffer_allocate();
-        ret_iferr(!ctx->local_buffer, "cpu cruncher failed to allocate local buffer");
+    if (*bufp == NULL) {
+        *bufp = tasks_buffers_obtain(ctx->tasks_buffs);
+        ret_iferr(!*bufp, "cpu cruncher failed to allocate local buffer");
     }
 
-    tasks_buffer_add_task(ctx->local_buffer, all_strs, permut);
+    tasks_buffer_add_task(*bufp, all_strs, permut);
 
     return 0;
 }
@@ -230,12 +225,13 @@ void* run_cpu_cruncher_thread(void *ptr) {
 
     int errcode = recurse_dict_words(ctx, &local_remainder, 0, ctx->cpu_cruncher_id, stack, 0, scs);
 
-    if (ctx->local_buffer != NULL && ctx->local_buffer->num_tasks > 0) {
-        errcode = tasks_buffers_add_buffer(ctx->tasks_buffs, ctx->local_buffer);
-        ctx->progress_l0_index = ctx->dict_by_char_len[0]; // mark this cpu cruncher as done
-        ret_iferr(errcode, "cpu cruncher failed to pass last buffer to gpu crunchers");
-        // TODO try-catch
-        ctx->local_buffer = NULL;
+    // Flush all per-N buffers that have remaining tasks
+    for (int n = 0; n <= MAX_WORD_LENGTH; n++) {
+        if (ctx->local_buffers[n] != NULL && ctx->local_buffers[n]->num_tasks > 0) {
+            errcode = tasks_buffers_add_buffer(ctx->tasks_buffs, ctx->local_buffers[n]);
+            ret_iferr(errcode, "cpu cruncher failed to pass last buffer to gpu crunchers");
+            ctx->local_buffers[n] = NULL;
+        }
     }
 
     ctx->progress_l0_index = ctx->dict_by_char_len[0]; // mark this cpu cruncher as done

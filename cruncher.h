@@ -17,6 +17,7 @@ typedef struct cruncher_ops_s {
     int (*create)(void *ctx, cruncher_config *cfg, uint32_t instance_id);
     void *(*run)(void *ctx);
     void (*get_stats)(void *ctx, float *busy_pct, float *anas_per_sec);
+    uint64_t (*get_total_anas)(void *ctx);
     bool (*is_running)(void *ctx);
     int (*destroy)(void *ctx);
     size_t ctx_size;

@@ -4,5 +4,6 @@
 #include "cruncher.h"
 
 extern cruncher_ops avx_cruncher_ops;
+extern cruncher_ops scalar_cruncher_ops;
 
 #endif //ANABRUTE_AVX_CRUNCHER_H
