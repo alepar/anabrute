@@ -50,9 +50,10 @@ static double run_benchmark(int num_threads, char_counts *seed, double baseline_
 
     /* Create CPU cruncher contexts */
     volatile uint32_t shared_l0_counter = 0;
+    volatile uint64_t shared_anas_produced = 0;
     cpu_cruncher_ctx ctxs[num_threads];
     for (int i = 0; i < num_threads; i++) {
-        cpu_cruncher_ctx_create(&ctxs[i], i, num_threads, seed, &dict_by_char, dict_by_char_len, &buffs, &shared_l0_counter);
+        cpu_cruncher_ctx_create(&ctxs[i], i, num_threads, seed, &dict_by_char, dict_by_char_len, &buffs, &shared_l0_counter, &shared_anas_produced);
     }
 
     /* Start consumer */

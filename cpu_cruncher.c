@@ -1,13 +1,15 @@
 #include "cpu_cruncher.h"
+#include "fact.h"
 #include "os.h"
 
 void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_id, uint32_t num_cpu_crunchers,
                              char_counts* seed_phrase, char_counts_strings* (*dict_by_char)[CHARCOUNT][MAX_DICT_SIZE], int* dict_by_char_len,
-                             tasks_buffers* tasks_buffs, volatile uint32_t *shared_l0_counter)
+                             tasks_buffers* tasks_buffs, volatile uint32_t *shared_l0_counter, volatile uint64_t *shared_anas_produced)
 {
     cruncher->num_cpu_crunchers = num_cpu_crunchers;
     cruncher->cpu_cruncher_id = cpu_cruncher_id;
     cruncher->shared_l0_counter = shared_l0_counter;
+    cruncher->shared_anas_produced = shared_anas_produced;
 
     cruncher->seed_phrase = seed_phrase;
     cruncher->dict_by_char = dict_by_char;
@@ -71,6 +73,7 @@ int submit_tasks(cpu_cruncher_ctx* ctx, int8_t permut[], int permut_len, char *a
     }
 
     tasks_buffer_add_task(*bufp, all_strs, permut);
+    __sync_fetch_and_add(ctx->shared_anas_produced, fact(n));
 
     return 0;
 }

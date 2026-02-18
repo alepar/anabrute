@@ -13,6 +13,9 @@ typedef struct cpu_cruncher_ctx_s {
     // atomic work stealing: shared counter for top-level dict entries
     volatile uint32_t *shared_l0_counter;
 
+    // total anagrams produced across all CPU threads (for ETA calculation)
+    volatile uint64_t *shared_anas_produced;
+
     // job definition
     char_counts* seed_phrase;
     char_counts_strings* (*dict_by_char)[CHARCOUNT][MAX_DICT_SIZE];
@@ -35,7 +38,7 @@ typedef struct cpu_cruncher_ctx_s {
 
 void cpu_cruncher_ctx_create(cpu_cruncher_ctx* cruncher, uint32_t cpu_cruncher_id, uint32_t num_cpu_crunchers,
                              char_counts* seed_phrase, char_counts_strings* (*dict_by_char)[CHARCOUNT][MAX_DICT_SIZE], int* dict_by_char_len,
-                             tasks_buffers* tasks_buffs, volatile uint32_t *shared_l0_counter);
+                             tasks_buffers* tasks_buffs, volatile uint32_t *shared_l0_counter, volatile uint64_t *shared_anas_produced);
 
 void* run_cpu_cruncher_thread(void *ptr);
 

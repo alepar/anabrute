@@ -44,7 +44,7 @@
     #define CL_DEVICE_TYPE_CPU (1 << 1)
 #endif
 
-#define MAX_WORD_LENGTH 7
+#define MAX_WORD_LENGTH 8
 
 // cpu<->gpu tasks buffers length, main RAM consumer
 #define TASKS_BUFFERS_SIZE 64

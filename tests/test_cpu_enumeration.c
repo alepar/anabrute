@@ -58,8 +58,9 @@ static uint32_t run_cruncher_with_dict(const char *dict_path, permut_task **out_
 
     /* Run CPU cruncher single-threaded */
     volatile uint32_t shared_l0_counter = 0;
+    volatile uint64_t shared_anas_produced = 0;
     cpu_cruncher_ctx ctx;
-    cpu_cruncher_ctx_create(&ctx, 0, 1, &seed, &dict_by_char, dict_by_char_len, &tasks_buffs, &shared_l0_counter);
+    cpu_cruncher_ctx_create(&ctx, 0, 1, &seed, &dict_by_char, dict_by_char_len, &tasks_buffs, &shared_l0_counter, &shared_anas_produced);
     run_cpu_cruncher_thread(&ctx);
 
     /* Close buffers so get_buffer returns NULL when empty */

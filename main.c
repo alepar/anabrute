@@ -1,3 +1,4 @@
+#include <math.h>
 #include "common.h"
 #include "avx_cruncher.h"
 #include "cpu_cruncher.h"
@@ -61,6 +62,18 @@ int main(int argc, char *argv[]) {
             qsort(dict_by_char[ci], dict_by_char_len[ci], sizeof(char_counts_strings*), cmp_ccs_length_desc);
         }
     }
+
+    // === precompute per-L0-entry weights for ETA estimation
+    // Weight reflects exponential growth of sub-combinations with remaining chars.
+    // Actual anagram counts calibrate the scale; weights provide the shape.
+    int l0_len = dict_by_char_len[0];
+    double *l0_cum_weight = malloc((l0_len + 1) * sizeof(double));
+    l0_cum_weight[0] = 0.0;
+    for (int i = 0; i < l0_len; i++) {
+        int remaining = seed_phrase.length - dict_by_char[0][i]->counts.length;
+        l0_cum_weight[i + 1] = l0_cum_weight[i] + pow(3.0, remaining);
+    }
+    double l0_total_weight = l0_cum_weight[l0_len];
 
     // === setup shared cpu/gpu cruncher stuff
 
@@ -148,9 +161,10 @@ int main(int argc, char *argv[]) {
     // AVX/scalar crunchers run on CPU cores, so only 1 core enumerates.
     uint32_t num_cpu_crunchers = have_gpu ? num_cpu_cores() : 1;
     volatile uint32_t shared_l0_counter = 0;
+    volatile uint64_t shared_anas_produced = 0;
     cpu_cruncher_ctx cpu_cruncher_ctxs[num_cpu_crunchers];
     for (uint32_t id=0; id<num_cpu_crunchers; id++) {
-        cpu_cruncher_ctx_create(cpu_cruncher_ctxs+id, id, num_cpu_crunchers, &seed_phrase, &dict_by_char, dict_by_char_len, &tasks_buffs, &shared_l0_counter);
+        cpu_cruncher_ctx_create(cpu_cruncher_ctxs+id, id, num_cpu_crunchers, &seed_phrase, &dict_by_char, dict_by_char_len, &tasks_buffs, &shared_l0_counter, &shared_anas_produced);
     }
 
     // === create and start cruncher threads
@@ -210,6 +224,12 @@ int main(int argc, char *argv[]) {
                num_cpu_crunchers, cpu_progress, dict_by_char_len[0],
                tasks_buffs.ring_count);
 
+        float total_aps = 0;
+        uint64_t total_consumed = 0;
+        for (uint32_t i = 0; i < num_crunchers; i++) {
+            total_consumed += crunchers[i].ops->get_total_anas(crunchers[i].ctx);
+        }
+
         cruncher_ops *seen_ops[MAX_CRUNCHER_INSTANCES];
         uint32_t seen_count = 0;
         for (uint32_t i = 0; i < num_crunchers; i++) {
@@ -236,6 +256,20 @@ int main(int argc, char *argv[]) {
             format_bignum(backend_aps, aps_str, 1000);
             pos += sprintf(strbuf + pos, " | %s(%d): %sAna/s %.0f%%",
                            crunchers[i].ops->name, backend_count, aps_str, backend_busy);
+            total_aps += backend_aps;
+        }
+
+        // ETA: weighted progress (theoretical shape) calibrated by actual anas_produced (scale)
+        uint64_t anas_produced = shared_anas_produced;
+        double done_weight = l0_cum_weight[cpu_progress < l0_len ? cpu_progress : l0_len];
+        if (done_weight > 0 && total_aps > 0 && elapsed_secs > 2) {
+            double scale = (double)anas_produced / done_weight;
+            double estimated_total = scale * l0_total_weight;
+            double remaining_anas = estimated_total - (double)total_consumed;
+            if (remaining_anas < 0) remaining_anas = 0;
+            long eta_secs = (long)(remaining_anas / total_aps);
+            pos += sprintf(strbuf + pos, " | ETA %02ld:%02ld:%02ld",
+                           eta_secs/3600, (eta_secs/60)%60, eta_secs%60);
         }
 
         printf("\033[2K\r%s", strbuf);
@@ -320,4 +354,5 @@ int main(int argc, char *argv[]) {
         free(crunchers[i].ctx);
     }
     free(hashes_reversed);
+    free(l0_cum_weight);
 }

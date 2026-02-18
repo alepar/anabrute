@@ -32,10 +32,6 @@ Missing `fclose(fd)` before return.
 
 ## LOW — Latent / Cosmetic
 
-### 11. `task_buffers.c:44` — partial memset of `c[]` array
-
-`memset(&dst_task->c, 0, 8)` only zeros 8 of 16 bytes in `c[MAX_OFFSETS_LENGTH]`. Currently masked by `MAX_WORD_LENGTH=5`, but breaks if raised above 8.
-
 ### 12. `common.h:31,33` — unparenthesized macros
 
 `#define PERMUT_TASKS_IN_KERNEL_TASK 256*1024` — using this in an expression like `sizeof(x) * PERMUT_TASKS_IN_KERNEL_TASK` would miscompute due to operator precedence.
@@ -74,3 +70,4 @@ const cl_context_properties ctx_props [] = { CL_CONTEXT_PLATFORM, platform_id, 0
 - **#4** `cpu_cruncher.c` — VLA overflows in `permut[]` and `all_strs[]` *(fixed: use `MAX_OFFSETS_LENGTH`/`MAX_STR_LENGTH`)*
 - **#8** `dict.c` — line trimming OOB for short lines *(fixed: bounds checks + empty string skip)*
 - **#10** `dict.c` — fd leak on error paths in `read_dict` *(fixed: added `fclose` calls)*
+- **#11** `task_buffers.c` — partial memset of `c[]` array *(fixed: now zeros full `MAX_OFFSETS_LENGTH`)*
