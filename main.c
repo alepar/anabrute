@@ -158,8 +158,8 @@ int main(int argc, char *argv[]) {
 
     // === create cpu cruncher contexts
     // GPU backends handle hashing off-CPU, so all cores can enumerate.
-    // AVX/scalar crunchers run on CPU cores, so only 1 core enumerates.
-    uint32_t num_cpu_crunchers = have_gpu ? num_cpu_cores() : 1;
+    // AVX/scalar crunchers share CPU cores with enumeration; use 4 enumerators.
+    uint32_t num_cpu_crunchers = have_gpu ? num_cpu_cores() : 4;
     volatile uint32_t shared_l0_counter = 0;
     volatile uint64_t shared_anas_produced = 0;
     cpu_cruncher_ctx cpu_cruncher_ctxs[num_cpu_crunchers];

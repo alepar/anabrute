@@ -206,6 +206,80 @@ static bool heap_next(permut_task *task) {
     return false;
 }
 
+/* ---------- GPU-9: OR-based string construction ---------- */
+
+/*
+ * Precompute each word's bytes as packed uint32s with trailing space.
+ * Indexed by byte offset in all_strs. Only computes for offsets actually used.
+ */
+static void precompute_word_images(permut_task *task,
+                                    uint32_t wimg[][11],
+                                    uint8_t *wlen_sp,
+                                    int *num_offsets_out) {
+    memset(wlen_sp, 0, MAX_STR_LENGTH);
+    int num_offsets = 0;
+    for (int io = 0; task->offsets[io]; io++) {
+        int8_t off = task->offsets[io];
+        int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
+        if (wlen_sp[byte_off] == 0) {
+            memset(wimg[byte_off], 0, 11 * sizeof(uint32_t));
+            const char *word = &task->all_strs[byte_off];
+            int len = 0;
+            while (word[len]) {
+                wimg[byte_off][len >> 2] |=
+                    ((uint32_t)(uint8_t)word[len]) << ((len & 3) << 3);
+                len++;
+            }
+            /* trailing space */
+            wimg[byte_off][len >> 2] |= ((uint32_t)' ') << ((len & 3) << 3);
+            wlen_sp[byte_off] = len + 1;
+        }
+        num_offsets = io + 1;
+    }
+    *num_offsets_out = num_offsets;
+}
+
+/*
+ * OR-based string construction: places precomputed word images into the key
+ * buffer using uint32 OR operations at the correct bit offset. Eliminates
+ * per-permutation strlen and separate space writes.
+ */
+static int construct_string_or(permut_task *task, uint32_t *key,
+                                const uint32_t wimg[][11],
+                                const uint8_t *wlen_sp,
+                                int num_offsets) {
+    memset(key, 0, 64);
+    int pos = 0;
+    for (int io = 0; io < num_offsets; io++) {
+        int8_t off = task->offsets[io];
+        int byte_off;
+        if (off < 0) byte_off = -off - 1;
+        else byte_off = task->a[off - 1] - 1;
+
+        int idx = pos >> 2;
+        int shift = (pos & 3) << 3;
+        int len_sp = wlen_sp[byte_off];
+        int nw = (len_sp + 3) >> 2;
+
+        if (shift == 0) {
+            for (int j = 0; j < nw; j++)
+                key[idx + j] |= wimg[byte_off][j];
+        } else {
+            for (int j = 0; j < nw; j++) {
+                key[idx + j] |= wimg[byte_off][j] << shift;
+                key[idx + j + 1] |= wimg[byte_off][j] >> (32 - shift);
+            }
+        }
+        pos += len_sp;
+    }
+    int wcs = pos - 1; /* remove trailing space */
+    char *dst = (char *)key;
+    dst[wcs] = (char)0x80;  /* overwrite trailing space with MD5 padding */
+    dst[56] = (char)(wcs << 3);
+    dst[57] = (char)(wcs >> 5);
+    return wcs;
+}
+
 /* ---------- Process one task (all permutations) ---------- */
 
 static void check_hashes(cruncher_config *cfg, uint32_t *hash, uint32_t *key, int wcs) {
@@ -220,6 +294,127 @@ static void check_hashes(cruncher_config *cfg, uint32_t *hash, uint32_t *key, in
         }
     }
 }
+
+#if defined(__x86_64__) && !defined(__AVX512F__)
+/*
+ * Combined AVX2 MD5 (8-lane) + early-exit hash check.
+ * Computes only 61 of 64 MD5 rounds. hash[0] (a) is finalized after round 60.
+ * SIMD-checks a against all targets; skips last 3 rounds (~5% MD5 savings)
+ * for the ~100% case where no hash[0] matches.
+ */
+static void md5_check_avx2(cruncher_config *cfg,
+                            const uint32_t *keys_ptrs[8],
+                            uint32_t keys[8][16], int wcs_arr[8], int count) {
+    __m256i k[16];
+    for (int w = 0; w < 16; w++) {
+        k[w] = _mm256_set_epi32(
+            keys_ptrs[7][w], keys_ptrs[6][w], keys_ptrs[5][w], keys_ptrs[4][w],
+            keys_ptrs[3][w], keys_ptrs[2][w], keys_ptrs[1][w], keys_ptrs[0][w]
+        );
+    }
+
+    __m256i a = _mm256_set1_epi32(0x67452301);
+    __m256i b = _mm256_set1_epi32((int32_t)0xefcdab89);
+    __m256i c = _mm256_set1_epi32((int32_t)0x98badcfe);
+    __m256i d = _mm256_set1_epi32(0x10325476);
+
+    /* Round 1 */
+    MD5_AVX2_STEP(MD5_AVX2_F, a, b, c, d, k[ 0], 0xd76aa478,  7);
+    MD5_AVX2_STEP(MD5_AVX2_F, d, a, b, c, k[ 1], 0xe8c7b756, 12);
+    MD5_AVX2_STEP(MD5_AVX2_F, c, d, a, b, k[ 2], 0x242070db, 17);
+    MD5_AVX2_STEP(MD5_AVX2_F, b, c, d, a, k[ 3], 0xc1bdceee, 22);
+    MD5_AVX2_STEP(MD5_AVX2_F, a, b, c, d, k[ 4], 0xf57c0faf,  7);
+    MD5_AVX2_STEP(MD5_AVX2_F, d, a, b, c, k[ 5], 0x4787c62a, 12);
+    MD5_AVX2_STEP(MD5_AVX2_F, c, d, a, b, k[ 6], 0xa8304613, 17);
+    MD5_AVX2_STEP(MD5_AVX2_F, b, c, d, a, k[ 7], 0xfd469501, 22);
+    MD5_AVX2_STEP(MD5_AVX2_F, a, b, c, d, k[ 8], 0x698098d8,  7);
+    MD5_AVX2_STEP(MD5_AVX2_F, d, a, b, c, k[ 9], 0x8b44f7af, 12);
+    MD5_AVX2_STEP(MD5_AVX2_F, c, d, a, b, k[10], 0xffff5bb1, 17);
+    MD5_AVX2_STEP(MD5_AVX2_F, b, c, d, a, k[11], 0x895cd7be, 22);
+    MD5_AVX2_STEP(MD5_AVX2_F, a, b, c, d, k[12], 0x6b901122,  7);
+    MD5_AVX2_STEP(MD5_AVX2_F, d, a, b, c, k[13], 0xfd987193, 12);
+    MD5_AVX2_STEP(MD5_AVX2_F, c, d, a, b, k[14], 0xa679438e, 17);
+    MD5_AVX2_STEP(MD5_AVX2_F, b, c, d, a, k[15], 0x49b40821, 22);
+    /* Round 2 */
+    MD5_AVX2_STEP(MD5_AVX2_G, a, b, c, d, k[ 1], 0xf61e2562,  5);
+    MD5_AVX2_STEP(MD5_AVX2_G, d, a, b, c, k[ 6], 0xc040b340,  9);
+    MD5_AVX2_STEP(MD5_AVX2_G, c, d, a, b, k[11], 0x265e5a51, 14);
+    MD5_AVX2_STEP(MD5_AVX2_G, b, c, d, a, k[ 0], 0xe9b6c7aa, 20);
+    MD5_AVX2_STEP(MD5_AVX2_G, a, b, c, d, k[ 5], 0xd62f105d,  5);
+    MD5_AVX2_STEP(MD5_AVX2_G, d, a, b, c, k[10], 0x02441453,  9);
+    MD5_AVX2_STEP(MD5_AVX2_G, c, d, a, b, k[15], 0xd8a1e681, 14);
+    MD5_AVX2_STEP(MD5_AVX2_G, b, c, d, a, k[ 4], 0xe7d3fbc8, 20);
+    MD5_AVX2_STEP(MD5_AVX2_G, a, b, c, d, k[ 9], 0x21e1cde6,  5);
+    MD5_AVX2_STEP(MD5_AVX2_G, d, a, b, c, k[14], 0xc33707d6,  9);
+    MD5_AVX2_STEP(MD5_AVX2_G, c, d, a, b, k[ 3], 0xf4d50d87, 14);
+    MD5_AVX2_STEP(MD5_AVX2_G, b, c, d, a, k[ 8], 0x455a14ed, 20);
+    MD5_AVX2_STEP(MD5_AVX2_G, a, b, c, d, k[13], 0xa9e3e905,  5);
+    MD5_AVX2_STEP(MD5_AVX2_G, d, a, b, c, k[ 2], 0xfcefa3f8,  9);
+    MD5_AVX2_STEP(MD5_AVX2_G, c, d, a, b, k[ 7], 0x676f02d9, 14);
+    MD5_AVX2_STEP(MD5_AVX2_G, b, c, d, a, k[12], 0x8d2a4c8a, 20);
+    /* Round 3 */
+    MD5_AVX2_STEP(MD5_AVX2_H, a, b, c, d, k[ 5], 0xfffa3942,  4);
+    MD5_AVX2_STEP(MD5_AVX2_H, d, a, b, c, k[ 8], 0x8771f681, 11);
+    MD5_AVX2_STEP(MD5_AVX2_H, c, d, a, b, k[11], 0x6d9d6122, 16);
+    MD5_AVX2_STEP(MD5_AVX2_H, b, c, d, a, k[14], 0xfde5380c, 23);
+    MD5_AVX2_STEP(MD5_AVX2_H, a, b, c, d, k[ 1], 0xa4beea44,  4);
+    MD5_AVX2_STEP(MD5_AVX2_H, d, a, b, c, k[ 4], 0x4bdecfa9, 11);
+    MD5_AVX2_STEP(MD5_AVX2_H, c, d, a, b, k[ 7], 0xf6bb4b60, 16);
+    MD5_AVX2_STEP(MD5_AVX2_H, b, c, d, a, k[10], 0xbebfbc70, 23);
+    MD5_AVX2_STEP(MD5_AVX2_H, a, b, c, d, k[13], 0x289b7ec6,  4);
+    MD5_AVX2_STEP(MD5_AVX2_H, d, a, b, c, k[ 0], 0xeaa127fa, 11);
+    MD5_AVX2_STEP(MD5_AVX2_H, c, d, a, b, k[ 3], 0xd4ef3085, 16);
+    MD5_AVX2_STEP(MD5_AVX2_H, b, c, d, a, k[ 6], 0x04881d05, 23);
+    MD5_AVX2_STEP(MD5_AVX2_H, a, b, c, d, k[ 9], 0xd9d4d039,  4);
+    MD5_AVX2_STEP(MD5_AVX2_H, d, a, b, c, k[12], 0xe6db99e5, 11);
+    MD5_AVX2_STEP(MD5_AVX2_H, c, d, a, b, k[15], 0x1fa27cf8, 16);
+    MD5_AVX2_STEP(MD5_AVX2_H, b, c, d, a, k[ 2], 0xc4ac5665, 23);
+    /* Round 4 — steps 48..60 (a is finalized after step 60) */
+    MD5_AVX2_STEP(MD5_AVX2_I, a, b, c, d, k[ 0], 0xf4292244,  6);
+    MD5_AVX2_STEP(MD5_AVX2_I, d, a, b, c, k[ 7], 0x432aff97, 10);
+    MD5_AVX2_STEP(MD5_AVX2_I, c, d, a, b, k[14], 0xab9423a7, 15);
+    MD5_AVX2_STEP(MD5_AVX2_I, b, c, d, a, k[ 5], 0xfc93a039, 21);
+    MD5_AVX2_STEP(MD5_AVX2_I, a, b, c, d, k[12], 0x655b59c3,  6);
+    MD5_AVX2_STEP(MD5_AVX2_I, d, a, b, c, k[ 3], 0x8f0ccc92, 10);
+    MD5_AVX2_STEP(MD5_AVX2_I, c, d, a, b, k[10], 0xffeff47d, 15);
+    MD5_AVX2_STEP(MD5_AVX2_I, b, c, d, a, k[ 1], 0x85845dd1, 21);
+    MD5_AVX2_STEP(MD5_AVX2_I, a, b, c, d, k[ 8], 0x6fa87e4f,  6);
+    MD5_AVX2_STEP(MD5_AVX2_I, d, a, b, c, k[15], 0xfe2ce6e0, 10);
+    MD5_AVX2_STEP(MD5_AVX2_I, c, d, a, b, k[ 6], 0xa3014314, 15);
+    MD5_AVX2_STEP(MD5_AVX2_I, b, c, d, a, k[13], 0x4e0811a1, 21);
+    MD5_AVX2_STEP(MD5_AVX2_I, a, b, c, d, k[ 4], 0xf7537e82,  6);  /* step 60: a final */
+
+    /* --- Early exit: check hash[0] before computing last 3 rounds --- */
+    __m256i ha = _mm256_add_epi32(a, _mm256_set1_epi32(0x67452301));
+    int any_match = 0;
+    for (uint32_t ih = 0; ih < cfg->hashes_num; ih++) {
+        __m256i cmp = _mm256_cmpeq_epi32(ha,
+                          _mm256_set1_epi32((int32_t)cfg->hashes[4 * ih]));
+        any_match |= _mm256_movemask_epi8(cmp);
+    }
+    if (!any_match) return;  /* fast path: skip last 3 rounds */
+
+    /* Rare path: finish rounds 61-63 */
+    MD5_AVX2_STEP(MD5_AVX2_I, d, a, b, c, k[11], 0xbd3af235, 10);
+    MD5_AVX2_STEP(MD5_AVX2_I, c, d, a, b, k[ 2], 0x2ad7d2bb, 15);
+    MD5_AVX2_STEP(MD5_AVX2_I, b, c, d, a, k[ 9], 0xeb86d391, 21);
+
+    __m256i hb = _mm256_add_epi32(b, _mm256_set1_epi32((int32_t)0xefcdab89));
+    __m256i hc = _mm256_add_epi32(c, _mm256_set1_epi32((int32_t)0x98badcfe));
+    __m256i hd = _mm256_add_epi32(d, _mm256_set1_epi32(0x10325476));
+
+    uint32_t a_vals[8], b_vals[8], c_vals[8], d_vals[8];
+    _mm256_storeu_si256((__m256i *)a_vals, ha);
+    _mm256_storeu_si256((__m256i *)b_vals, hb);
+    _mm256_storeu_si256((__m256i *)c_vals, hc);
+    _mm256_storeu_si256((__m256i *)d_vals, hd);
+
+    for (int lane = 0; lane < count; lane++) {
+        uint32_t hash[4] = {a_vals[lane], b_vals[lane], c_vals[lane], d_vals[lane]};
+        check_hashes(cfg, hash, keys[lane], wcs_arr[lane]);
+    }
+}
+#endif
 
 /*
  * SIMD hash check: compare 16 hash[0] values against all targets using AVX-512.
@@ -325,46 +520,35 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
         check_hashes_avx512(cfg, ha, hb, hc, hd, keys, wcs_arr, batch);
     }
 #elif defined(__x86_64__) || defined(_M_AMD64)
-    /* Batch 8 permutations for AVX2 MD5 */
+    /* GPU-9: Precompute word images for OR-based string construction */
+    uint32_t wimg[MAX_STR_LENGTH][11];
+    uint8_t wlen_sp[MAX_STR_LENGTH];
+    int num_offsets;
+    precompute_word_images(task, wimg, wlen_sp, &num_offsets);
+
+    /* Batch 8 permutations for AVX2 MD5 + early-exit hash check (GPU-8) */
     uint32_t keys[8][16];
     int wcs_arr[8];
     int batch = 0;
 
     do {
-        wcs_arr[batch] = construct_string(task, keys[batch]);
+        wcs_arr[batch] = construct_string_or(task, keys[batch], wimg, wlen_sp, num_offsets);
         batch++;
 
         if (batch == 8) {
             const uint32_t *key_ptrs[8];
-            uint32_t *hash_ptrs[8];
-            uint32_t hashes_out[8][4];
-            for (int i = 0; i < 8; i++) {
-                key_ptrs[i] = keys[i];
-                hash_ptrs[i] = hashes_out[i];
-            }
-
-            md5_avx2_x8(key_ptrs, hash_ptrs);
-
-            for (int i = 0; i < 8; i++) {
-                check_hashes(cfg, hashes_out[i], keys[i], wcs_arr[i]);
-            }
+            for (int i = 0; i < 8; i++) key_ptrs[i] = keys[i];
+            md5_check_avx2(cfg, key_ptrs, keys, wcs_arr, 8);
             batch = 0;
         }
     } while (heap_next(task));
 
-    /* Tail: pad to 8 with duplicates of last key, hash all, check only real ones */
+    /* Tail: pad to 8 with duplicates of last key */
     if (batch > 0) {
         const uint32_t *key_ptrs[8];
-        uint32_t *hash_ptrs[8];
-        uint32_t hashes_out[8][4];
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 8; i++)
             key_ptrs[i] = (i < batch) ? keys[i] : keys[batch - 1];
-            hash_ptrs[i] = hashes_out[i];
-        }
-        md5_avx2_x8(key_ptrs, hash_ptrs);
-        for (int i = 0; i < batch; i++) {
-            check_hashes(cfg, hashes_out[i], keys[i], wcs_arr[i]);
-        }
+        md5_check_avx2(cfg, key_ptrs, keys, wcs_arr, batch);
     }
 #else
     do {

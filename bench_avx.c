@@ -62,10 +62,12 @@ int main(int argc, char **argv) {
     printf("  Buffers: %d (each %d tasks)\n", num_buffers, PERMUT_TASKS_IN_KERNEL_TASK);
     printf("  Words per task (n): %d → %lu permutations/task\n", n_words, (unsigned long)fact(n_words));
 
-    /* Dummy target hashes (won't match anything) */
-    uint32_t hashes[4] = {0xdeadbeef, 0xcafebabe, 0x12345678, 0x9abcdef0};
-    uint32_t hashes_reversed[MAX_STR_LENGTH / 4];
-    memset(hashes_reversed, 0, MAX_STR_LENGTH);
+    /* Dummy target hashes (won't match anything) — use 19 to match production */
+    #define NUM_TARGET_HASHES 19
+    uint32_t hashes[4 * NUM_TARGET_HASHES];
+    for (int i = 0; i < 4 * NUM_TARGET_HASHES; i++) hashes[i] = 0xdeadbe00 + i;
+    uint32_t hashes_reversed[NUM_TARGET_HASHES * MAX_STR_LENGTH / 4];
+    memset(hashes_reversed, 0, sizeof(hashes_reversed));
 
     tasks_buffers tasks_buffs;
     tasks_buffers_create(&tasks_buffs);
@@ -73,7 +75,7 @@ int main(int argc, char **argv) {
     cruncher_config cfg = {
         .tasks_buffs = &tasks_buffs,
         .hashes = hashes,
-        .hashes_num = 1,
+        .hashes_num = NUM_TARGET_HASHES,
         .hashes_reversed = hashes_reversed,
     };
 

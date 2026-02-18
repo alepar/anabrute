@@ -38,13 +38,13 @@ CPU-side batch-by-N is done. GPU side still uses fixed `MAX_ITERS_IN_KERNEL_TASK
 
 Unroll the hash comparison loop to make the fast path (no match on hash[0]) explicit with `continue` instead of inner loop + break.
 
-### GPU-8. Skip Last 3 MD5 Rounds (DONE — Metal)
+### GPU-8. Skip Last 3 MD5 Rounds (DONE — Metal + AVX)
 
-In MD5's 64 rounds, variable `a` (hash[0]) is last modified in round 60. Compute only 61 rounds, check `a + H0` against target hash[0]. Only compute rounds 61-63 on a match. Since matches are ~1 in 2^32, this saves 3 rounds for essentially 100% of hashes (~4.7% MD5 savings). On GPU all threads in a warp skip together since no thread will match. **Result: 2.5→2.7 GAna/s (~8% improvement).** Source: penartur5 forum thread optimization.
+In MD5's 64 rounds, variable `a` (hash[0]) is last modified in round 60. Compute only 61 rounds, check `a + H0` against target hash[0]. Only compute rounds 61-63 on a match. Since matches are ~1 in 2^32, this saves 3 rounds for essentially 100% of hashes (~4.7% MD5 savings). On GPU all threads in a warp skip together since no thread will match. **Metal result: 2.5→2.7 GAna/s (~8%).** Source: penartur5 forum thread optimization. **AVX2 result:** Combined `md5_check_avx2` function with 61 rounds + SIMD early-exit. Measured +0-6% across n=2..5 (n=2: 15→15.4, n=3: 30→31.7, n=4: 32→32.9, n=5: 28→29.1 M/s). Modest but consistent, no regression.
 
-### GPU-9. OR-Based String Construction (REJECTED — Metal, TODO — AVX)
+### GPU-9. OR-Based String Construction (REJECTED — Metal, DONE — AVX)
 
-Precompute each word's bytes as packed uint32s, OR them into the key buffer at the correct bit offset. Eliminates per-byte writes in the hot loop. penartur5 reported 2.5x speedup on CPU/AVX string assembly. **Result on Metal: 4x SLOWER** (600 MAna/s vs 2.5 GAna/s baseline). The precomputed wimg arrays cause massive register spilling on GPU — same root cause as GPU-11. Metal compiler generates superior code for direct byte writes. **May still benefit AVX cruncher** where L1 cache is plentiful and SIMD OR is native.
+Precompute each word's bytes as packed uint32s, OR them into the key buffer at the correct bit offset. Eliminates per-byte writes in the hot loop. penartur5 reported 2.5x speedup on CPU/AVX string assembly. **Result on Metal: 4x SLOWER** (600 MAna/s vs 2.5 GAna/s baseline). The precomputed wimg arrays cause massive register spilling on GPU — same root cause as GPU-11. Metal compiler generates superior code for direct byte writes. **AVX result: +14-22% for n≥4** (32.9→37.4 n=4, 29.1→35.5 n=5), slight regression for n≤3 (-3-8%) due to precompute overhead not amortizing over few permutations. Net positive since n≥4 dominates production workload.
 
 ### GPU-10. Rotate Intrinsic in MD5 STEP (REJECTED — Metal)
 
@@ -62,20 +62,9 @@ Two pre-allocated MTLBuffers, overlap memcpy with GPU execution. **Result: no me
 
 ## CPU Enumeration Optimizations
 
-### CPU-1. SIMD `char_counts_subtract` (TODO, HIGH)
+### CPU-1. SIMD `char_counts_subtract` (DONE — SSE2 + NEON)
 
-The hottest function in the search. Called millions of times per thread in `recurse_dict_words`. With `CHARCOUNT=12`, the entire `counts[12]` array fits in a single 128-bit SSE/NEON register. Replace the scalar loop with:
-
-```c
-__m128i from_v = _mm_loadu_si128((__m128i*)from->counts);
-__m128i what_v = _mm_loadu_si128((__m128i*)what->counts);
-__m128i saturated = _mm_subs_epu8(from_v, what_v);
-__m128i real_sub  = _mm_sub_epi8(from_v, what_v);
-if (_mm_movemask_epi8(_mm_xor_si128(saturated, real_sub)) & 0xFFF) return false;
-_mm_storeu_si128((__m128i*)from->counts, saturated);
-```
-
-Prerequisite: pad `char_counts.counts` to 16 bytes (currently 12).
+The hottest function in the search. Called millions of times per thread in `recurse_dict_words`. With `CHARCOUNT=12`, the entire `counts[12]` array fits in a single 128-bit SSE/NEON register. Replaced scalar loop with SSE2 saturating subtract + XOR underflow check (x86) and NEON vclt + saturating subtract (ARM). `char_counts.counts` padded to 16 bytes for SIMD. See `permut_types.c`.
 
 ### CPU-2. Atomic Work Stealing (TODO, MEDIUM)
 
@@ -86,9 +75,9 @@ int i = __sync_fetch_and_add(&next_l0_index, 1);
 if (i >= dict_by_char_len[curchar]) break;
 ```
 
-### CPU-3. `char_counts_copy` as memcpy (TODO, LOW)
+### CPU-3. `char_counts_copy` as memcpy (DONE)
 
-Element-by-element copy for 13 bytes → `memcpy(dst, src, sizeof(char_counts))`.
+Element-by-element copy → `memcpy(dst, src, sizeof(char_counts))`. Already implemented in `permut_types.c`.
 
 ### CPU-4. Cache strlen in `recurse_string_combs` (TODO, LOW)
 
@@ -137,6 +126,18 @@ Full Metal compute shader port with pre-allocated reusable task buffer.
 
 ### DONE: CPU/AVX Cruncher Backend
 Scalar + AVX2 (8-wide) + AVX-512 (16-wide) MD5 paths with compile-time dispatch.
+
+### DONE: AVX2 SIMD Early-Exit Hash Check
+`check_hashes_avx2()` uses `_mm256_cmpeq_epi32` + `_mm256_movemask_epi8` to check hash[0] across 8 lanes against all targets. Eliminated scalar hash check bottleneck with 19 target hashes. 14→15 M/s (n=2), 24→30 M/s (n=3), 24→33 M/s (n=4), 22→28 M/s (n=5). ~25-34% improvement.
+
+### DONE: AVX2 GPU-8 Skip Last 3 MD5 Rounds
+Combined `md5_check_avx2` function: 61 MD5 rounds inlined + SIMD early-exit hash[0] check. Only computes rounds 61-63 on rare hash[0] match. +0-6% on top of SIMD hash check.
+
+### DONE: AVX2 GPU-9 OR-Based String Construction
+Precompute word bytes as packed uint32s with trailing space. OR into key buffer at correct bit offset, eliminating per-permutation strlen and separate space writes. +14-22% for n≥4 (amortized precomputation); slight -3-8% for n≤3 (not enough permutations to amortize). Net positive for production workloads.
+
+### DONE: SIMD char_counts_subtract (CPU-1)
+SSE2 saturating subtract + XOR underflow detection for `char_counts_subtract`. NEON path for ARM. `char_counts.counts` padded from 12→16 bytes for SIMD alignment.
 
 ---
 

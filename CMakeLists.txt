@@ -25,14 +25,14 @@ add_compile_options(-Wno-int-conversion)
 
 # Enable AVX2 for avx_cruncher.c on x86_64
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2 -mavx512f")
+    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2")
 endif()
 
 # === Main binary (works with or without OpenCL) ===
 add_executable (anabrute main.c opencl_cruncher.c gpu_cruncher.c avx_cruncher.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
 set_property(TARGET anabrute PROPERTY C_STANDARD 99)
 target_include_directories (anabrute PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries (anabrute pthread)
+target_link_libraries (anabrute pthread m)
 if(OpenCL_FOUND)
     target_link_libraries (anabrute ${OpenCL_LIBRARY})
 endif()
@@ -69,12 +69,12 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     target_include_directories(bench_avx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(bench_avx pthread)
     target_compile_options(bench_avx PRIVATE -O2)
-    set_source_files_properties(bench_avx.c PROPERTIES COMPILE_FLAGS "-mavx2 -mavx512f")
+    set_source_files_properties(bench_avx.c PROPERTIES COMPILE_FLAGS "-mavx2")
 
     add_executable(bench_breakdown bench_breakdown.c os.c)
     set_property(TARGET bench_breakdown PROPERTY C_STANDARD 99)
     target_include_directories(bench_breakdown PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_compile_options(bench_breakdown PRIVATE -O2 -mavx2 -mavx512f)
+    target_compile_options(bench_breakdown PRIVATE -O2 -mavx2)
 endif()
 
 # === Tests ===
