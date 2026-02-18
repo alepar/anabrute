@@ -417,24 +417,116 @@ static void md5_check_avx2(cruncher_config *cfg,
 #endif
 
 /*
- * SIMD hash check: compare 16 hash[0] values against all targets using AVX-512.
- * Only extracts and does full 4-word comparison for lanes with hash[0] match.
- * Returns without extracting anything for the ~100% case of no matches.
+ * Combined AVX-512 MD5 (16-lane) + early-exit hash check (GPU-8).
+ * Computes only 61 of 64 MD5 rounds. hash[0] (a) is finalized after step 60.
+ * SIMD-checks a against all targets using _mm512_cmpeq_epi32_mask;
+ * skips last 3 rounds (~5% MD5 savings) for the ~100% case where no
+ * hash[0] matches.
  */
 #if defined(__x86_64__) && defined(__AVX512F__)
-static void check_hashes_avx512(cruncher_config *cfg,
-                                __m512i ha, __m512i hb, __m512i hc, __m512i hd,
-                                uint32_t keys[16][16], int wcs_arr[16], int count) {
-    /* SIMD early-exit: compare hash[0] across all 16 lanes against all targets */
+static void md5_check_avx512(cruncher_config *cfg,
+                              uint32_t keys[16][16], int wcs_arr[16], int count) {
+    __m512i k[16];
+    const __m512i lane_offsets = _mm512_setr_epi32(
+        0*16, 1*16, 2*16, 3*16, 4*16, 5*16, 6*16, 7*16,
+        8*16, 9*16, 10*16, 11*16, 12*16, 13*16, 14*16, 15*16
+    );
+    const uint32_t *base = (const uint32_t *)keys;
+    for (int w = 0; w < 16; w++) {
+        __m512i indices = _mm512_add_epi32(lane_offsets, _mm512_set1_epi32(w));
+        k[w] = _mm512_i32gather_epi32(indices, (const int *)base, 4);
+    }
+
+    __m512i a = _mm512_set1_epi32(0x67452301);
+    __m512i b = _mm512_set1_epi32((int32_t)0xefcdab89);
+    __m512i c = _mm512_set1_epi32((int32_t)0x98badcfe);
+    __m512i d = _mm512_set1_epi32(0x10325476);
+
+    /* Round 1 */
+    MD5_512_STEP(MD5_512_F, a, b, c, d, k[ 0], 0xd76aa478,  7);
+    MD5_512_STEP(MD5_512_F, d, a, b, c, k[ 1], 0xe8c7b756, 12);
+    MD5_512_STEP(MD5_512_F, c, d, a, b, k[ 2], 0x242070db, 17);
+    MD5_512_STEP(MD5_512_F, b, c, d, a, k[ 3], 0xc1bdceee, 22);
+    MD5_512_STEP(MD5_512_F, a, b, c, d, k[ 4], 0xf57c0faf,  7);
+    MD5_512_STEP(MD5_512_F, d, a, b, c, k[ 5], 0x4787c62a, 12);
+    MD5_512_STEP(MD5_512_F, c, d, a, b, k[ 6], 0xa8304613, 17);
+    MD5_512_STEP(MD5_512_F, b, c, d, a, k[ 7], 0xfd469501, 22);
+    MD5_512_STEP(MD5_512_F, a, b, c, d, k[ 8], 0x698098d8,  7);
+    MD5_512_STEP(MD5_512_F, d, a, b, c, k[ 9], 0x8b44f7af, 12);
+    MD5_512_STEP(MD5_512_F, c, d, a, b, k[10], 0xffff5bb1, 17);
+    MD5_512_STEP(MD5_512_F, b, c, d, a, k[11], 0x895cd7be, 22);
+    MD5_512_STEP(MD5_512_F, a, b, c, d, k[12], 0x6b901122,  7);
+    MD5_512_STEP(MD5_512_F, d, a, b, c, k[13], 0xfd987193, 12);
+    MD5_512_STEP(MD5_512_F, c, d, a, b, k[14], 0xa679438e, 17);
+    MD5_512_STEP(MD5_512_F, b, c, d, a, k[15], 0x49b40821, 22);
+    /* Round 2 */
+    MD5_512_STEP(MD5_512_G, a, b, c, d, k[ 1], 0xf61e2562,  5);
+    MD5_512_STEP(MD5_512_G, d, a, b, c, k[ 6], 0xc040b340,  9);
+    MD5_512_STEP(MD5_512_G, c, d, a, b, k[11], 0x265e5a51, 14);
+    MD5_512_STEP(MD5_512_G, b, c, d, a, k[ 0], 0xe9b6c7aa, 20);
+    MD5_512_STEP(MD5_512_G, a, b, c, d, k[ 5], 0xd62f105d,  5);
+    MD5_512_STEP(MD5_512_G, d, a, b, c, k[10], 0x02441453,  9);
+    MD5_512_STEP(MD5_512_G, c, d, a, b, k[15], 0xd8a1e681, 14);
+    MD5_512_STEP(MD5_512_G, b, c, d, a, k[ 4], 0xe7d3fbc8, 20);
+    MD5_512_STEP(MD5_512_G, a, b, c, d, k[ 9], 0x21e1cde6,  5);
+    MD5_512_STEP(MD5_512_G, d, a, b, c, k[14], 0xc33707d6,  9);
+    MD5_512_STEP(MD5_512_G, c, d, a, b, k[ 3], 0xf4d50d87, 14);
+    MD5_512_STEP(MD5_512_G, b, c, d, a, k[ 8], 0x455a14ed, 20);
+    MD5_512_STEP(MD5_512_G, a, b, c, d, k[13], 0xa9e3e905,  5);
+    MD5_512_STEP(MD5_512_G, d, a, b, c, k[ 2], 0xfcefa3f8,  9);
+    MD5_512_STEP(MD5_512_G, c, d, a, b, k[ 7], 0x676f02d9, 14);
+    MD5_512_STEP(MD5_512_G, b, c, d, a, k[12], 0x8d2a4c8a, 20);
+    /* Round 3 */
+    MD5_512_STEP(MD5_512_H, a, b, c, d, k[ 5], 0xfffa3942,  4);
+    MD5_512_STEP(MD5_512_H, d, a, b, c, k[ 8], 0x8771f681, 11);
+    MD5_512_STEP(MD5_512_H, c, d, a, b, k[11], 0x6d9d6122, 16);
+    MD5_512_STEP(MD5_512_H, b, c, d, a, k[14], 0xfde5380c, 23);
+    MD5_512_STEP(MD5_512_H, a, b, c, d, k[ 1], 0xa4beea44,  4);
+    MD5_512_STEP(MD5_512_H, d, a, b, c, k[ 4], 0x4bdecfa9, 11);
+    MD5_512_STEP(MD5_512_H, c, d, a, b, k[ 7], 0xf6bb4b60, 16);
+    MD5_512_STEP(MD5_512_H, b, c, d, a, k[10], 0xbebfbc70, 23);
+    MD5_512_STEP(MD5_512_H, a, b, c, d, k[13], 0x289b7ec6,  4);
+    MD5_512_STEP(MD5_512_H, d, a, b, c, k[ 0], 0xeaa127fa, 11);
+    MD5_512_STEP(MD5_512_H, c, d, a, b, k[ 3], 0xd4ef3085, 16);
+    MD5_512_STEP(MD5_512_H, b, c, d, a, k[ 6], 0x04881d05, 23);
+    MD5_512_STEP(MD5_512_H, a, b, c, d, k[ 9], 0xd9d4d039,  4);
+    MD5_512_STEP(MD5_512_H, d, a, b, c, k[12], 0xe6db99e5, 11);
+    MD5_512_STEP(MD5_512_H, c, d, a, b, k[15], 0x1fa27cf8, 16);
+    MD5_512_STEP(MD5_512_H, b, c, d, a, k[ 2], 0xc4ac5665, 23);
+    /* Round 4 — steps 48..60 (a is finalized after step 60) */
+    MD5_512_STEP(MD5_512_I, a, b, c, d, k[ 0], 0xf4292244,  6);
+    MD5_512_STEP(MD5_512_I, d, a, b, c, k[ 7], 0x432aff97, 10);
+    MD5_512_STEP(MD5_512_I, c, d, a, b, k[14], 0xab9423a7, 15);
+    MD5_512_STEP(MD5_512_I, b, c, d, a, k[ 5], 0xfc93a039, 21);
+    MD5_512_STEP(MD5_512_I, a, b, c, d, k[12], 0x655b59c3,  6);
+    MD5_512_STEP(MD5_512_I, d, a, b, c, k[ 3], 0x8f0ccc92, 10);
+    MD5_512_STEP(MD5_512_I, c, d, a, b, k[10], 0xffeff47d, 15);
+    MD5_512_STEP(MD5_512_I, b, c, d, a, k[ 1], 0x85845dd1, 21);
+    MD5_512_STEP(MD5_512_I, a, b, c, d, k[ 8], 0x6fa87e4f,  6);
+    MD5_512_STEP(MD5_512_I, d, a, b, c, k[15], 0xfe2ce6e0, 10);
+    MD5_512_STEP(MD5_512_I, c, d, a, b, k[ 6], 0xa3014314, 15);
+    MD5_512_STEP(MD5_512_I, b, c, d, a, k[13], 0x4e0811a1, 21);
+    MD5_512_STEP(MD5_512_I, a, b, c, d, k[ 4], 0xf7537e82,  6);  /* step 60: a final */
+
+    /* --- Early exit: check hash[0] before computing last 3 rounds --- */
+    __m512i ha = _mm512_add_epi32(a, _mm512_set1_epi32(0x67452301));
     __mmask16 any_match = 0;
     for (uint32_t ih = 0; ih < cfg->hashes_num; ih++) {
         any_match |= _mm512_cmpeq_epi32_mask(ha,
                          _mm512_set1_epi32((int32_t)cfg->hashes[4 * ih]));
     }
+    if (!any_match) return;  /* fast path: skip last 3 rounds */
 
-    if (!any_match) return;  /* fast path: no hash[0] match in any lane */
+    /* Rare path: finish rounds 61-63 */
+    MD5_512_STEP(MD5_512_I, d, a, b, c, k[11], 0xbd3af235, 10);
+    MD5_512_STEP(MD5_512_I, c, d, a, b, k[ 2], 0x2ad7d2bb, 15);
+    MD5_512_STEP(MD5_512_I, b, c, d, a, k[ 9], 0xeb86d391, 21);
 
-    /* Slow path: extract scalars and do full 4-word comparison */
+    __m512i hb = _mm512_add_epi32(b, _mm512_set1_epi32((int32_t)0xefcdab89));
+    __m512i hc = _mm512_add_epi32(c, _mm512_set1_epi32((int32_t)0x98badcfe));
+    __m512i hd = _mm512_add_epi32(d, _mm512_set1_epi32(0x10325476));
+
+    /* Extract and do full 4-word comparison for matching lanes */
     uint32_t a_vals[16], b_vals[16], c_vals[16], d_vals[16];
     _mm512_storeu_si512(a_vals, ha);
     _mm512_storeu_si512(b_vals, hb);
@@ -504,9 +596,7 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
         batch++;
 
         if (batch == 16) {
-            __m512i ha, hb, hc, hd;
-            md5_avx512_x16_vec((const uint32_t *)keys, &ha, &hb, &hc, &hd);
-            check_hashes_avx512(cfg, ha, hb, hc, hd, keys, wcs_arr, 16);
+            md5_check_avx512(cfg, keys, wcs_arr, 16);
             batch = 0;
         }
     } while (heap_next(task));
@@ -515,9 +605,7 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
     if (batch > 0) {
         for (int i = batch; i < 16; i++)
             memcpy(keys[i], keys[batch - 1], 64);
-        __m512i ha, hb, hc, hd;
-        md5_avx512_x16_vec((const uint32_t *)keys, &ha, &hb, &hc, &hd);
-        check_hashes_avx512(cfg, ha, hb, hc, hd, keys, wcs_arr, batch);
+        md5_check_avx512(cfg, keys, wcs_arr, batch);
     }
 #elif defined(__x86_64__) || defined(_M_AMD64)
     /* GPU-9: Precompute word images for OR-based string construction */
