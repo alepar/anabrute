@@ -7,6 +7,12 @@
 #include <string.h>
 #include <stdio.h>
 
+#if defined(__x86_64__) || defined(_M_AMD64)
+static bool cpu_has_avx512f(void) {
+    return __builtin_cpu_supports("avx512f");
+}
+#endif
+
 /* Context for one CPU cruncher thread */
 typedef struct {
     cruncher_config *cfg;
@@ -295,7 +301,7 @@ static void check_hashes(cruncher_config *cfg, uint32_t *hash, uint32_t *key, in
     }
 }
 
-#if defined(__x86_64__) && !defined(__AVX512F__)
+#if defined(__x86_64__) || defined(_M_AMD64)
 /*
  * Combined AVX2 MD5 (8-lane) + early-exit hash check.
  * Computes only 61 of 64 MD5 rounds. hash[0] (a) is finalized after round 60.
@@ -423,7 +429,7 @@ static void md5_check_avx2(cruncher_config *cfg,
  * skips last 3 rounds (~5% MD5 savings) for the ~100% case where no
  * hash[0] matches.
  */
-#if defined(__x86_64__) && defined(__AVX512F__)
+#if defined(__x86_64__) || defined(_M_AMD64)
 static void md5_check_avx512(cruncher_config *cfg,
                               uint32_t keys[16][16], int wcs_arr[16], int count) {
     __m512i k[16];
@@ -547,96 +553,88 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
     if (task->i >= task->n) return;
     cruncher_config *cfg = actx->cfg;
 
-#if defined(__x86_64__) && defined(__AVX512F__)
-    /* --- Precompute word lengths (indexed by byte offset in all_strs) ---
-     * The set of byte offsets never changes during permutation (only their order
-     * in a[] changes), so we can compute strlen once per task. */
-    uint8_t wlen[MAX_STR_LENGTH];
-    memset(wlen, 0, sizeof(wlen));
-    int num_offsets = 0;
-    for (int io = 0; task->offsets[io]; io++) {
-        int8_t off = task->offsets[io];
-        int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
-        if (!wlen[byte_off]) {
-            int l = 0;
-            while (task->all_strs[byte_off + l]) l++;
-            wlen[byte_off] = l;
-        }
-        num_offsets = io + 1;
-    }
-
-    /* --- Main permutation loop with inlined string construction ---
-     *
-     * All permutations of a task have the same total string length (same words,
-     * different order). Zero all key buffers once upfront; subsequent permutations
-     * only overwrite word data bytes (0..wcs-1) + constant padding at wcs, 56-57.
-     * Bytes wcs+1..55 and 58..63 stay 0 from the initial memset.
-     */
-    uint32_t keys[16][16];
-    memset(keys, 0, sizeof(keys));
-    int wcs_arr[16];
-    int batch = 0;
-
-    do {
-        char *dst = (char *)keys[batch];
-        int wcs = 0;
-        for (int io = 0; io < num_offsets; io++) {
+#if defined(__x86_64__) || defined(_M_AMD64)
+    if (cpu_has_avx512f()) {
+        /* --- AVX-512 path (16-lane) --- */
+        uint8_t wlen[MAX_STR_LENGTH];
+        memset(wlen, 0, sizeof(wlen));
+        int num_offsets = 0;
+        for (int io = 0; task->offsets[io]; io++) {
             int8_t off = task->offsets[io];
             int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
-            int len = wlen[byte_off];
-            memcpy(dst + wcs, &task->all_strs[byte_off], len);
-            wcs += len;
-            dst[wcs++] = ' ';
+            if (!wlen[byte_off]) {
+                int l = 0;
+                while (task->all_strs[byte_off + l]) l++;
+                wlen[byte_off] = l;
+            }
+            num_offsets = io + 1;
         }
-        wcs--;
-        dst[wcs] = (char)0x80;
-        dst[56] = (char)(wcs << 3);
-        dst[57] = (char)(wcs >> 5);
-        wcs_arr[batch] = wcs;
-        batch++;
 
-        if (batch == 16) {
-            md5_check_avx512(cfg, keys, wcs_arr, 16);
-            batch = 0;
+        uint32_t keys[16][16];
+        memset(keys, 0, sizeof(keys));
+        int wcs_arr[16];
+        int batch = 0;
+
+        do {
+            char *dst = (char *)keys[batch];
+            int wcs = 0;
+            for (int io = 0; io < num_offsets; io++) {
+                int8_t off = task->offsets[io];
+                int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
+                int len = wlen[byte_off];
+                memcpy(dst + wcs, &task->all_strs[byte_off], len);
+                wcs += len;
+                dst[wcs++] = ' ';
+            }
+            wcs--;
+            dst[wcs] = (char)0x80;
+            dst[56] = (char)(wcs << 3);
+            dst[57] = (char)(wcs >> 5);
+            wcs_arr[batch] = wcs;
+            batch++;
+
+            if (batch == 16) {
+                md5_check_avx512(cfg, keys, wcs_arr, 16);
+                batch = 0;
+            }
+        } while (heap_next(task));
+
+        if (batch > 0) {
+            for (int i = batch; i < 16; i++)
+                memcpy(keys[i], keys[batch - 1], 64);
+            md5_check_avx512(cfg, keys, wcs_arr, batch);
         }
-    } while (heap_next(task));
-
-    /* Tail: pad to 16 with duplicates of last key */
-    if (batch > 0) {
-        for (int i = batch; i < 16; i++)
-            memcpy(keys[i], keys[batch - 1], 64);
-        md5_check_avx512(cfg, keys, wcs_arr, batch);
+        return;
     }
-#elif defined(__x86_64__) || defined(_M_AMD64)
-    /* GPU-9: Precompute word images for OR-based string construction */
-    uint32_t wimg[MAX_STR_LENGTH][11];
-    uint8_t wlen_sp[MAX_STR_LENGTH];
-    int num_offsets;
-    precompute_word_images(task, wimg, wlen_sp, &num_offsets);
+    /* --- AVX2 path (8-lane) --- */
+    {
+        uint32_t wimg[MAX_STR_LENGTH][11];
+        uint8_t wlen_sp[MAX_STR_LENGTH];
+        int num_offsets;
+        precompute_word_images(task, wimg, wlen_sp, &num_offsets);
 
-    /* Batch 8 permutations for AVX2 MD5 + early-exit hash check (GPU-8) */
-    uint32_t keys[8][16];
-    int wcs_arr[8];
-    int batch = 0;
+        uint32_t keys[8][16];
+        int wcs_arr[8];
+        int batch = 0;
 
-    do {
-        wcs_arr[batch] = construct_string_or(task, keys[batch], wimg, wlen_sp, num_offsets);
-        batch++;
+        do {
+            wcs_arr[batch] = construct_string_or(task, keys[batch], wimg, wlen_sp, num_offsets);
+            batch++;
 
-        if (batch == 8) {
+            if (batch == 8) {
+                const uint32_t *key_ptrs[8];
+                for (int i = 0; i < 8; i++) key_ptrs[i] = keys[i];
+                md5_check_avx2(cfg, key_ptrs, keys, wcs_arr, 8);
+                batch = 0;
+            }
+        } while (heap_next(task));
+
+        if (batch > 0) {
             const uint32_t *key_ptrs[8];
-            for (int i = 0; i < 8; i++) key_ptrs[i] = keys[i];
-            md5_check_avx2(cfg, key_ptrs, keys, wcs_arr, 8);
-            batch = 0;
+            for (int i = 0; i < 8; i++)
+                key_ptrs[i] = (i < batch) ? keys[i] : keys[batch - 1];
+            md5_check_avx2(cfg, key_ptrs, keys, wcs_arr, batch);
         }
-    } while (heap_next(task));
-
-    /* Tail: pad to 8 with duplicates of last key */
-    if (batch > 0) {
-        const uint32_t *key_ptrs[8];
-        for (int i = 0; i < 8; i++)
-            key_ptrs[i] = (i < batch) ? keys[i] : keys[batch - 1];
-        md5_check_avx2(cfg, key_ptrs, keys, wcs_arr, batch);
     }
 #else
     do {
@@ -651,10 +649,22 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
 
 /* ---------- Vtable functions ---------- */
 
-static uint32_t avx_probe(void) {
+static uint32_t avx512_probe(void) {
 #if defined(__x86_64__) || defined(_M_AMD64)
+    if (!cpu_has_avx512f()) return 0;
     uint32_t cores = num_cpu_cores();
-    printf("  avx: %d cores available, suggesting %d thread(s)\n", cores, cores);
+    printf("  avx512: %d cores, avx-512 available\n", cores);
+    return cores;
+#else
+    return 0;
+#endif
+}
+
+static uint32_t avx2_probe(void) {
+#if defined(__x86_64__) || defined(_M_AMD64)
+    if (!__builtin_cpu_supports("avx2")) return 0;
+    uint32_t cores = num_cpu_cores();
+    printf("  avx2: %d cores, avx2 available\n", cores);
     return cores;
 #else
     return 0;
@@ -736,9 +746,21 @@ static int avx_destroy(void *ctx) {
     return 0;
 }
 
-cruncher_ops avx_cruncher_ops = {
-    .name = "avx",
-    .probe = avx_probe,
+cruncher_ops avx512_cruncher_ops = {
+    .name = "avx512",
+    .probe = avx512_probe,
+    .create = avx_create,
+    .run = avx_run,
+    .get_stats = avx_get_stats,
+    .get_total_anas = avx_get_total_anas,
+    .is_running = avx_is_running,
+    .destroy = avx_destroy,
+    .ctx_size = sizeof(avx_cruncher_ctx),
+};
+
+cruncher_ops avx2_cruncher_ops = {
+    .name = "avx2",
+    .probe = avx2_probe,
     .create = avx_create,
     .run = avx_run,
     .get_stats = avx_get_stats,

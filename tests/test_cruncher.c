@@ -230,7 +230,8 @@ int main(void) {
         &metal_cruncher_ops,
 #endif
         &opencl_cruncher_ops,
-        &avx_cruncher_ops,
+        &avx512_cruncher_ops,
+        &avx2_cruncher_ops,
         NULL
     };
 

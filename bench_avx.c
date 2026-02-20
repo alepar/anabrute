@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     void **ctxs = calloc(num_threads, sizeof(void *));
     pthread_t *threads = calloc(num_threads, sizeof(pthread_t));
 
-    cruncher_ops *ops = &avx_cruncher_ops;
+    cruncher_ops *ops = &avx2_cruncher_ops;
 
     for (int i = 0; i < num_threads; i++) {
         ctxs[i] = calloc(1, ops->ctx_size);

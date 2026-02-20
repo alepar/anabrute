@@ -5,42 +5,60 @@
 #include "gpu_cruncher.h"
 
 #define MAX_OPENCL_DEVICES 16
-static cl_platform_id s_platform_id;
+#define MAX_OPENCL_PLATFORMS 8
+static cl_platform_id s_platform_ids[MAX_OPENCL_DEVICES]; // per-device platform
 static cl_device_id s_device_ids[MAX_OPENCL_DEVICES];
 static uint32_t s_num_devices = 0;
 
 static uint32_t opencl_probe(void) {
+    cl_platform_id platforms[MAX_OPENCL_PLATFORMS];
     cl_uint num_platforms;
-    clGetPlatformIDs(1, &s_platform_id, &num_platforms);
+    clGetPlatformIDs(MAX_OPENCL_PLATFORMS, platforms, &num_platforms);
     if (!num_platforms) return 0;
 
-    cl_uint num_all;
-    clGetDeviceIDs(s_platform_id, CL_DEVICE_TYPE_ALL, 0, NULL, &num_all);
-    if (!num_all) return 0;
-
-    cl_device_id all_ids[MAX_OPENCL_DEVICES];
-    uint32_t to_get = num_all > MAX_OPENCL_DEVICES ? MAX_OPENCL_DEVICES : num_all;
-    clGetDeviceIDs(s_platform_id, CL_DEVICE_TYPE_ALL, to_get, all_ids, &num_all);
-
-    // Prefer GPU devices over CPU
+    // Gather all GPU devices from all platforms
     s_num_devices = 0;
-    uint32_t num_gpus = 0;
-    for (uint32_t i = 0; i < num_all && i < MAX_OPENCL_DEVICES; i++) {
-        cl_device_type dtype;
-        clGetDeviceInfo(all_ids[i], CL_DEVICE_TYPE, sizeof(dtype), &dtype, NULL);
-        if (dtype > CL_DEVICE_TYPE_CPU) num_gpus++;
+    for (cl_uint p = 0; p < num_platforms && s_num_devices < MAX_OPENCL_DEVICES; p++) {
+        cl_uint num_devs;
+        if (clGetDeviceIDs(platforms[p], CL_DEVICE_TYPE_GPU, 0, NULL, &num_devs) != CL_SUCCESS)
+            continue;
+        cl_device_id devs[MAX_OPENCL_DEVICES];
+        uint32_t to_get = num_devs > MAX_OPENCL_DEVICES ? MAX_OPENCL_DEVICES : num_devs;
+        clGetDeviceIDs(platforms[p], CL_DEVICE_TYPE_GPU, to_get, devs, &num_devs);
+        for (cl_uint d = 0; d < num_devs && s_num_devices < MAX_OPENCL_DEVICES; d++) {
+            s_platform_ids[s_num_devices] = platforms[p];
+            s_device_ids[s_num_devices] = devs[d];
+            s_num_devices++;
+        }
     }
 
-    if (num_gpus > 0) {
-        for (uint32_t i = 0; i < num_all && i < MAX_OPENCL_DEVICES; i++) {
-            cl_device_type dtype;
-            clGetDeviceInfo(all_ids[i], CL_DEVICE_TYPE, sizeof(dtype), &dtype, NULL);
-            if (dtype > CL_DEVICE_TYPE_CPU)
-                s_device_ids[s_num_devices++] = all_ids[i];
+    // No GPU devices found (e.g. POCL CPU-only) — don't fall back to CPU devices,
+    // native AVX/scalar backends are always faster than OpenCL-on-CPU.
+    if (s_num_devices == 0) return 0;
+
+    // Skip integrated GPUs if any discrete GPU is present
+    bool have_discrete = false;
+    for (uint32_t i = 0; i < s_num_devices; i++) {
+        cl_bool unified = CL_FALSE;
+        clGetDeviceInfo(s_device_ids[i], CL_DEVICE_HOST_UNIFIED_MEMORY, sizeof(unified), &unified, NULL);
+        if (!unified) { have_discrete = true; break; }
+    }
+    if (have_discrete) {
+        uint32_t dst = 0;
+        for (uint32_t i = 0; i < s_num_devices; i++) {
+            cl_bool unified = CL_FALSE;
+            clGetDeviceInfo(s_device_ids[i], CL_DEVICE_HOST_UNIFIED_MEMORY, sizeof(unified), &unified, NULL);
+            if (!unified) {
+                s_platform_ids[dst] = s_platform_ids[i];
+                s_device_ids[dst] = s_device_ids[i];
+                dst++;
+            } else {
+                char name[256];
+                clGetDeviceInfo(s_device_ids[i], CL_DEVICE_NAME, sizeof(name), name, NULL);
+                printf("  opencl: skipping integrated GPU: %s\n", name);
+            }
         }
-    } else {
-        for (uint32_t i = 0; i < num_all && i < MAX_OPENCL_DEVICES; i++)
-            s_device_ids[s_num_devices++] = all_ids[i];
+        s_num_devices = dst;
     }
 
     for (uint32_t i = 0; i < s_num_devices; i++) {
@@ -54,7 +72,7 @@ static uint32_t opencl_probe(void) {
 
 static int opencl_create(void *ctx, cruncher_config *cfg, uint32_t instance_id) {
     gpu_cruncher_ctx *gctx = ctx;
-    int err = gpu_cruncher_ctx_create(gctx, s_platform_id, s_device_ids[instance_id],
+    int err = gpu_cruncher_ctx_create(gctx, s_platform_ids[instance_id], s_device_ids[instance_id],
                                        cfg->tasks_buffs, cfg->hashes, cfg->hashes_num);
     if (err) return err;
     gctx->cfg = cfg;

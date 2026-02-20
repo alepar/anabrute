@@ -25,7 +25,7 @@ add_compile_options(-Wno-int-conversion)
 
 # Enable AVX2 for avx_cruncher.c on x86_64
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2")
+    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2 -mavx512f")
 endif()
 
 # === Main binary (works with or without OpenCL) ===

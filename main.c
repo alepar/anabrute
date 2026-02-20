@@ -92,7 +92,8 @@ int main(int argc, char *argv[]) {
         &metal_cruncher_ops,
 #endif
         &opencl_cruncher_ops,
-        &avx_cruncher_ops,
+        &avx512_cruncher_ops,
+        &avx2_cruncher_ops,
         &scalar_cruncher_ops,
         NULL
     };
@@ -119,21 +120,28 @@ int main(int argc, char *argv[]) {
     uint32_t num_crunchers = 0;
 
     printf("Probing cruncher backends:\n");
-    bool have_gpu = false;
-    bool have_accel = false;  // any accelerated backend (gpu or avx)
+    bool have_gpu = false;        // Metal or discrete OpenCL GPU
+    bool have_cpu_accel = false;  // AVX-512 or AVX2
     for (int bi = 0; all_backends[bi]; bi++) {
         cruncher_ops *ops = all_backends[bi];
 
-        // OpenCL: skip when a native GPU backend (Metal) is already active —
-        // on Apple Silicon, OpenCL runs on CPU and just contends.
+        bool is_gpu = (ops != &avx512_cruncher_ops && ops != &avx2_cruncher_ops && ops != &scalar_cruncher_ops);
+
+        // Skip OpenCL if native GPU (Metal) already active
         if (have_gpu && ops == &opencl_cruncher_ops) {
-            printf("  %s: skipped (native GPU backend already active)\n", ops->name);
+            printf("  %s: skipped (native GPU already active)\n", ops->name);
             continue;
         }
 
-        // Scalar CPU: only use as fallback when no accelerated backend is available.
-        if (have_accel && ops == &scalar_cruncher_ops) {
-            printf("  %s: skipped (accelerated backend already active)\n", ops->name);
+        // Skip CPU-bound backends if GPU is available (they'd just contend)
+        if (have_gpu && !is_gpu) {
+            printf("  %s: skipped (GPU backend active)\n", ops->name);
+            continue;
+        }
+
+        // Skip lower-priority CPU backends if we already have a faster one
+        if (have_cpu_accel && (ops == &avx2_cruncher_ops || ops == &scalar_cruncher_ops)) {
+            printf("  %s: skipped (faster CPU backend active)\n", ops->name);
             continue;
         }
 
@@ -142,8 +150,8 @@ int main(int argc, char *argv[]) {
 
         printf("  %s: %d instance(s)\n", ops->name, count);
 
-        if (ops != &avx_cruncher_ops && ops != &scalar_cruncher_ops) have_gpu = true;
-        have_accel = true;
+        if (is_gpu) have_gpu = true;
+        if (ops == &avx512_cruncher_ops || ops == &avx2_cruncher_ops) have_cpu_accel = true;
 
         for (uint32_t i = 0; i < count && num_crunchers < MAX_CRUNCHER_INSTANCES; i++) {
             cruncher_instance *ci = &crunchers[num_crunchers];
@@ -157,9 +165,10 @@ int main(int argc, char *argv[]) {
     printf("%d cruncher instance(s) total\n\n", num_crunchers);
 
     // === create cpu cruncher contexts
-    // GPU backends handle hashing off-CPU, so all cores can enumerate.
-    // AVX/scalar crunchers share CPU cores with enumeration; use 4 enumerators.
-    uint32_t num_cpu_crunchers = have_gpu ? num_cpu_cores() : 4;
+    // GPU backends don't compete for CPU — use all cores for enumeration.
+    // CPU-bound crunchers (AVX-512, AVX2, scalar) share cores — limit enumerators to 2.
+    uint32_t total_cores = num_cpu_cores();
+    uint32_t num_cpu_crunchers = have_gpu ? total_cores : 2;
     volatile uint32_t shared_l0_counter = 0;
     volatile uint64_t shared_anas_produced = 0;
     cpu_cruncher_ctx cpu_cruncher_ctxs[num_cpu_crunchers];
