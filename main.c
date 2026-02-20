@@ -1,5 +1,6 @@
 #include <math.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include "common.h"
 #include "avx_cruncher.h"
 #include "cpu_cruncher.h"
@@ -333,7 +334,11 @@ int main(int argc, char *argv[]) {
                            eta_secs/3600, (eta_secs/60)%60, eta_secs%60);
         }
 
-        printf("\033[2K\r%s", strbuf);
+        // Truncate to terminal width to prevent line wrapping (which breaks \r)
+        struct winsize ws;
+        if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 && pos > ws.ws_col)
+            strbuf[ws.ws_col] = '\0';
+        printf("\r\033[2K%s", strbuf);
         fflush(stdout);
 
         // if all cpu threads are done - send poison pill to crunchers
