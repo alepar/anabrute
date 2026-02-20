@@ -1,4 +1,5 @@
 #include <math.h>
+#include <string.h>
 #include "common.h"
 #include "avx_cruncher.h"
 #include "cpu_cruncher.h"
@@ -85,6 +86,32 @@ int main(int argc, char *argv[]) {
     ret_iferr(!hashes_num, "failed to read hashes");
     ret_iferr(!hashes, "failed to allocate hashes");
 
+    // === parse CLI flags ===
+
+    cruncher_ops *forced_backend = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-avx2") == 0) {
+            forced_backend = &avx2_cruncher_ops;
+        } else if (strcmp(argv[i], "-avx512") == 0) {
+            forced_backend = &avx512_cruncher_ops;
+        } else if (strcmp(argv[i], "-scalar") == 0 || strcmp(argv[i], "-cpu") == 0) {
+            forced_backend = &scalar_cruncher_ops;
+        } else if (strcmp(argv[i], "-opencl") == 0) {
+            forced_backend = &opencl_cruncher_ops;
+#ifdef __APPLE__
+        } else if (strcmp(argv[i], "-metal") == 0) {
+            forced_backend = &metal_cruncher_ops;
+#endif
+        } else {
+            fprintf(stderr, "Usage: %s [-avx512] [-avx2] [-scalar] [-opencl]"
+#ifdef __APPLE__
+                    " [-metal]"
+#endif
+                    "\n", argv[0]);
+            return 1;
+        }
+    }
+
     // === probe and create crunchers ===
 
     cruncher_ops *all_backends[] = {
@@ -119,47 +146,72 @@ int main(int argc, char *argv[]) {
     cruncher_instance crunchers[MAX_CRUNCHER_INSTANCES];
     uint32_t num_crunchers = 0;
 
-    printf("Probing cruncher backends:\n");
-    bool have_gpu = false;        // Metal or discrete OpenCL GPU
-    bool have_cpu_accel = false;  // AVX-512 or AVX2
-    for (int bi = 0; all_backends[bi]; bi++) {
-        cruncher_ops *ops = all_backends[bi];
+    bool have_gpu = false;
+    bool have_cpu_accel = false;
 
-        bool is_gpu = (ops != &avx512_cruncher_ops && ops != &avx2_cruncher_ops && ops != &scalar_cruncher_ops);
+    if (forced_backend) {
+        // Forced backend: probe it, fail if unavailable
+        printf("Forced backend: %s\n", forced_backend->name);
+        uint32_t count = forced_backend->probe();
+        ret_iferr(!count, "forced backend not available on this system");
+        printf("  %s: %d instance(s)\n", forced_backend->name, count);
 
-        // Skip OpenCL if native GPU (Metal) already active
-        if (have_gpu && ops == &opencl_cruncher_ops) {
-            printf("  %s: skipped (native GPU already active)\n", ops->name);
-            continue;
-        }
-
-        // Skip CPU-bound backends if GPU is available (they'd just contend)
-        if (have_gpu && !is_gpu) {
-            printf("  %s: skipped (GPU backend active)\n", ops->name);
-            continue;
-        }
-
-        // Skip lower-priority CPU backends if we already have a faster one
-        if (have_cpu_accel && (ops == &avx2_cruncher_ops || ops == &scalar_cruncher_ops)) {
-            printf("  %s: skipped (faster CPU backend active)\n", ops->name);
-            continue;
-        }
-
-        uint32_t count = ops->probe();
-        if (!count) continue;
-
-        printf("  %s: %d instance(s)\n", ops->name, count);
-
+        bool is_gpu = (forced_backend != &avx512_cruncher_ops &&
+                       forced_backend != &avx2_cruncher_ops &&
+                       forced_backend != &scalar_cruncher_ops);
         if (is_gpu) have_gpu = true;
-        if (ops == &avx512_cruncher_ops || ops == &avx2_cruncher_ops) have_cpu_accel = true;
+        if (forced_backend == &avx512_cruncher_ops || forced_backend == &avx2_cruncher_ops) have_cpu_accel = true;
 
         for (uint32_t i = 0; i < count && num_crunchers < MAX_CRUNCHER_INSTANCES; i++) {
             cruncher_instance *ci = &crunchers[num_crunchers];
-            ci->ops = ops;
-            ci->ctx = calloc(1, ops->ctx_size);
-            int err = ops->create(ci->ctx, &cruncher_cfg, i);
+            ci->ops = forced_backend;
+            ci->ctx = calloc(1, forced_backend->ctx_size);
+            int err = forced_backend->create(ci->ctx, &cruncher_cfg, i);
             ret_iferr(err, "failed to create cruncher instance");
             num_crunchers++;
+        }
+    } else {
+        // Auto-select: priority-based backend selection
+        printf("Probing cruncher backends:\n");
+        for (int bi = 0; all_backends[bi]; bi++) {
+            cruncher_ops *ops = all_backends[bi];
+
+            bool is_gpu = (ops != &avx512_cruncher_ops && ops != &avx2_cruncher_ops && ops != &scalar_cruncher_ops);
+
+            // Skip OpenCL if native GPU (Metal) already active
+            if (have_gpu && ops == &opencl_cruncher_ops) {
+                printf("  %s: skipped (native GPU already active)\n", ops->name);
+                continue;
+            }
+
+            // Skip CPU-bound backends if GPU is available (they'd just contend)
+            if (have_gpu && !is_gpu) {
+                printf("  %s: skipped (GPU backend active)\n", ops->name);
+                continue;
+            }
+
+            // Skip lower-priority CPU backends if we already have a faster one
+            if (have_cpu_accel && (ops == &avx2_cruncher_ops || ops == &scalar_cruncher_ops)) {
+                printf("  %s: skipped (faster CPU backend active)\n", ops->name);
+                continue;
+            }
+
+            uint32_t count = ops->probe();
+            if (!count) continue;
+
+            printf("  %s: %d instance(s)\n", ops->name, count);
+
+            if (is_gpu) have_gpu = true;
+            if (ops == &avx512_cruncher_ops || ops == &avx2_cruncher_ops) have_cpu_accel = true;
+
+            for (uint32_t i = 0; i < count && num_crunchers < MAX_CRUNCHER_INSTANCES; i++) {
+                cruncher_instance *ci = &crunchers[num_crunchers];
+                ci->ops = ops;
+                ci->ctx = calloc(1, ops->ctx_size);
+                int err = ops->create(ci->ctx, &cruncher_cfg, i);
+                ret_iferr(err, "failed to create cruncher instance");
+                num_crunchers++;
+            }
         }
     }
     printf("%d cruncher instance(s) total\n\n", num_crunchers);

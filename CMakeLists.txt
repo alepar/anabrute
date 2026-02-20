@@ -1,4 +1,9 @@
 cmake_minimum_required (VERSION 3.5)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 project(anabrute)
 
 if(APPLE)
