@@ -309,14 +309,10 @@ static void check_hashes(cruncher_config *cfg, uint32_t *hash, uint32_t *key, in
  * for the ~100% case where no hash[0] matches.
  */
 static void md5_check_avx2(cruncher_config *cfg,
-                            const uint32_t *keys_ptrs[8],
-                            uint32_t keys[8][16], int wcs_arr[8], int count) {
+                            uint32_t keys[16][8], int wcs_arr[8], int count) {
     __m256i k[16];
     for (int w = 0; w < 16; w++) {
-        k[w] = _mm256_set_epi32(
-            keys_ptrs[7][w], keys_ptrs[6][w], keys_ptrs[5][w], keys_ptrs[4][w],
-            keys_ptrs[3][w], keys_ptrs[2][w], keys_ptrs[1][w], keys_ptrs[0][w]
-        );
+        k[w] = _mm256_load_si256((__m256i *)keys[w]);
     }
 
     __m256i a = _mm256_set1_epi32(0x67452301);
@@ -417,10 +413,86 @@ static void md5_check_avx2(cruncher_config *cfg,
 
     for (int lane = 0; lane < count; lane++) {
         uint32_t hash[4] = {a_vals[lane], b_vals[lane], c_vals[lane], d_vals[lane]};
-        check_hashes(cfg, hash, keys[lane], wcs_arr[lane]);
+        /* Reconstruct this lane's key from SoA layout (rare path) */
+        uint32_t lane_key[16];
+        for (int w = 0; w < 16; w++) lane_key[w] = keys[w][lane];
+        check_hashes(cfg, hash, lane_key, wcs_arr[lane]);
     }
 }
 #endif
+
+/*
+ * OR-based string construction into SoA key layout.
+ * Writes precomputed word images directly into keys[word_pos][lane],
+ * where the first index is the uint32 position in the MD5 block (0-15)
+ * and the second index is the SIMD lane.
+ * keys must be zeroed before calling (once per batch, not per lane).
+ */
+static int construct_string_or_soa_16(permut_task *task,
+                                       uint32_t keys[][16],
+                                       int lane,
+                                       const uint32_t wimg[][11],
+                                       const uint8_t *wlen_sp,
+                                       int num_offsets) {
+    int pos = 0;
+    for (int io = 0; io < num_offsets; io++) {
+        int8_t off = task->offsets[io];
+        int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
+        int idx = pos >> 2;
+        int shift = (pos & 3) << 3;
+        int len_sp = wlen_sp[byte_off];
+        int nw = (len_sp + 3) >> 2;
+        if (shift == 0) {
+            for (int j = 0; j < nw; j++)
+                keys[idx + j][lane] |= wimg[byte_off][j];
+        } else {
+            for (int j = 0; j < nw; j++) {
+                keys[idx + j][lane] |= wimg[byte_off][j] << shift;
+                keys[idx + j + 1][lane] |= wimg[byte_off][j] >> (32 - shift);
+            }
+        }
+        pos += len_sp;
+    }
+    int wcs = pos - 1;
+    /* MD5 padding: 0x80 byte after message, length in bits at offset 56 */
+    ((char *)&keys[wcs >> 2][lane])[(wcs & 3)] = (char)0x80;
+    keys[14][lane] = (uint32_t)(wcs << 3);
+    return wcs;
+}
+
+/*
+ * OR-based string construction into SoA key layout (8-lane variant for AVX2).
+ */
+static int construct_string_or_soa_8(permut_task *task,
+                                      uint32_t keys[][8],
+                                      int lane,
+                                      const uint32_t wimg[][11],
+                                      const uint8_t *wlen_sp,
+                                      int num_offsets) {
+    int pos = 0;
+    for (int io = 0; io < num_offsets; io++) {
+        int8_t off = task->offsets[io];
+        int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
+        int idx = pos >> 2;
+        int shift = (pos & 3) << 3;
+        int len_sp = wlen_sp[byte_off];
+        int nw = (len_sp + 3) >> 2;
+        if (shift == 0) {
+            for (int j = 0; j < nw; j++)
+                keys[idx + j][lane] |= wimg[byte_off][j];
+        } else {
+            for (int j = 0; j < nw; j++) {
+                keys[idx + j][lane] |= wimg[byte_off][j] << shift;
+                keys[idx + j + 1][lane] |= wimg[byte_off][j] >> (32 - shift);
+            }
+        }
+        pos += len_sp;
+    }
+    int wcs = pos - 1;
+    ((char *)&keys[wcs >> 2][lane])[(wcs & 3)] = (char)0x80;
+    keys[14][lane] = (uint32_t)(wcs << 3);
+    return wcs;
+}
 
 /*
  * Combined AVX-512 MD5 (16-lane) + early-exit hash check (GPU-8).
@@ -428,19 +500,14 @@ static void md5_check_avx2(cruncher_config *cfg,
  * SIMD-checks a against all targets using _mm512_cmpeq_epi32_mask;
  * skips last 3 rounds (~5% MD5 savings) for the ~100% case where no
  * hash[0] matches.
+ * Keys are in SoA layout: keys[word_pos][lane] — enables aligned loads.
  */
 #if defined(__x86_64__) || defined(_M_AMD64)
 static void md5_check_avx512(cruncher_config *cfg,
                               uint32_t keys[16][16], int wcs_arr[16], int count) {
     __m512i k[16];
-    const __m512i lane_offsets = _mm512_setr_epi32(
-        0*16, 1*16, 2*16, 3*16, 4*16, 5*16, 6*16, 7*16,
-        8*16, 9*16, 10*16, 11*16, 12*16, 13*16, 14*16, 15*16
-    );
-    const uint32_t *base = (const uint32_t *)keys;
     for (int w = 0; w < 16; w++) {
-        __m512i indices = _mm512_add_epi32(lane_offsets, _mm512_set1_epi32(w));
-        k[w] = _mm512_i32gather_epi32(indices, (const int *)base, 4);
+        k[w] = _mm512_load_si512((__m512i *)keys[w]);
     }
 
     __m512i a = _mm512_set1_epi32(0x67452301);
@@ -544,7 +611,10 @@ static void md5_check_avx512(cruncher_config *cfg,
         int lane = __builtin_ctz(remaining);
         remaining &= remaining - 1;
         uint32_t hash[4] = {a_vals[lane], b_vals[lane], c_vals[lane], d_vals[lane]};
-        check_hashes(cfg, hash, keys[lane], wcs_arr[lane]);
+        /* Reconstruct this lane's key from SoA layout (rare path) */
+        uint32_t lane_key[16];
+        for (int w = 0; w < 16; w++) lane_key[w] = keys[w][lane];
+        check_hashes(cfg, hash, lane_key, wcs_arr[lane]);
     }
 }
 #endif
@@ -555,85 +625,68 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
 
 #if defined(__x86_64__) || defined(_M_AMD64)
     if (cpu_has_avx512f()) {
-        /* --- AVX-512 path (16-lane) --- */
-        uint8_t wlen[MAX_STR_LENGTH];
-        memset(wlen, 0, sizeof(wlen));
-        int num_offsets = 0;
-        for (int io = 0; task->offsets[io]; io++) {
-            int8_t off = task->offsets[io];
-            int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
-            if (!wlen[byte_off]) {
-                int l = 0;
-                while (task->all_strs[byte_off + l]) l++;
-                wlen[byte_off] = l;
-            }
-            num_offsets = io + 1;
-        }
+        /* --- AVX-512 path (16-lane, SoA key layout) --- */
+        uint32_t wimg[MAX_STR_LENGTH][11];
+        uint8_t wlen_sp[MAX_STR_LENGTH];
+        int num_offsets;
+        precompute_word_images(task, wimg, wlen_sp, &num_offsets);
 
-        uint32_t keys[16][16];
+        uint32_t keys[16][16] __attribute__((aligned(64)));  /* keys[word][lane] */
         memset(keys, 0, sizeof(keys));
         int wcs_arr[16];
         int batch = 0;
 
         do {
-            char *dst = (char *)keys[batch];
-            int wcs = 0;
-            for (int io = 0; io < num_offsets; io++) {
-                int8_t off = task->offsets[io];
-                int byte_off = (off < 0) ? (-off - 1) : (task->a[off - 1] - 1);
-                int len = wlen[byte_off];
-                memcpy(dst + wcs, &task->all_strs[byte_off], len);
-                wcs += len;
-                dst[wcs++] = ' ';
-            }
-            wcs--;
-            dst[wcs] = (char)0x80;
-            dst[56] = (char)(wcs << 3);
-            dst[57] = (char)(wcs >> 5);
-            wcs_arr[batch] = wcs;
+            wcs_arr[batch] = construct_string_or_soa_16(task, keys, batch,
+                                                         wimg, wlen_sp, num_offsets);
             batch++;
 
             if (batch == 16) {
                 md5_check_avx512(cfg, keys, wcs_arr, 16);
                 batch = 0;
+                memset(keys, 0, sizeof(keys));
             }
         } while (heap_next(task));
 
         if (batch > 0) {
-            for (int i = batch; i < 16; i++)
-                memcpy(keys[i], keys[batch - 1], 64);
+            /* Duplicate last lane into remaining slots */
+            for (int w = 0; w < 16; w++)
+                for (int i = batch; i < 16; i++)
+                    keys[w][i] = keys[w][batch - 1];
             md5_check_avx512(cfg, keys, wcs_arr, batch);
         }
         return;
     }
-    /* --- AVX2 path (8-lane) --- */
+    /* --- AVX2 path (8-lane, SoA key layout) --- */
     {
         uint32_t wimg[MAX_STR_LENGTH][11];
         uint8_t wlen_sp[MAX_STR_LENGTH];
         int num_offsets;
         precompute_word_images(task, wimg, wlen_sp, &num_offsets);
 
-        uint32_t keys[8][16];
+        uint32_t keys[16][8] __attribute__((aligned(32)));  /* keys[word][lane] */
+        memset(keys, 0, sizeof(keys));
         int wcs_arr[8];
         int batch = 0;
 
         do {
-            wcs_arr[batch] = construct_string_or(task, keys[batch], wimg, wlen_sp, num_offsets);
+            wcs_arr[batch] = construct_string_or_soa_8(task, keys, batch,
+                                                        wimg, wlen_sp, num_offsets);
             batch++;
 
             if (batch == 8) {
-                const uint32_t *key_ptrs[8];
-                for (int i = 0; i < 8; i++) key_ptrs[i] = keys[i];
-                md5_check_avx2(cfg, key_ptrs, keys, wcs_arr, 8);
+                md5_check_avx2(cfg, keys, wcs_arr, 8);
                 batch = 0;
+                memset(keys, 0, sizeof(keys));
             }
         } while (heap_next(task));
 
         if (batch > 0) {
-            const uint32_t *key_ptrs[8];
-            for (int i = 0; i < 8; i++)
-                key_ptrs[i] = (i < batch) ? keys[i] : keys[batch - 1];
-            md5_check_avx2(cfg, key_ptrs, keys, wcs_arr, batch);
+            /* Duplicate last lane into remaining slots */
+            for (int w = 0; w < 16; w++)
+                for (int i = batch; i < 8; i++)
+                    keys[w][i] = keys[w][batch - 1];
+            md5_check_avx2(cfg, keys, wcs_arr, batch);
         }
     }
 #else
