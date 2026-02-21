@@ -19,10 +19,10 @@ typedef struct gpu_cruncher_ctx_s {
     cl_program program;
     cl_command_queue queue;
 
-    // persistent kernel and double-buffered task memory
+    // persistent kernel and triple-buffered task memory
     cl_kernel kernel;
-    cl_mem mem_tasks[2];           // ping-pong GPU buffers
-    tasks_buffer *host_tasks[2];   // ping-pong host buffers
+    cl_mem mem_tasks[3];           // rotating GPU buffers
+    tasks_buffer *host_tasks[3];   // rotating host buffers
 
     // input queue
     tasks_buffers *tasks_buffs;

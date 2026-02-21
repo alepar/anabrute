@@ -101,9 +101,9 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
     ctx->kernel = clCreateKernel(ctx->program, "permut", &errcode);
     ret_iferr(errcode, "failed to create permut kernel");
 
-    // Allocate double-buffered task memory
+    // Allocate triple-buffered task memory
     size_t tasks_buf_size = PERMUT_TASKS_IN_KERNEL_TASK * sizeof(permut_task);
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         ctx->mem_tasks[i] = clCreateBuffer(ctx->cl_ctx, CL_MEM_READ_WRITE, tasks_buf_size, NULL, &errcode);
         ret_iferr(errcode, "failed to create mem_tasks buffer");
         ctx->host_tasks[i] = tasks_buffer_allocate();
@@ -154,7 +154,7 @@ cl_int gpu_cruncher_ctx_free(gpu_cruncher_ctx *ctx) {
 
     cl_int errcode = CL_SUCCESS;
     errcode |= clReleaseKernel(ctx->kernel);
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         errcode |= clReleaseMemObject(ctx->mem_tasks[i]);
         if (ctx->host_tasks[i]) {
             free(ctx->host_tasks[i]);
@@ -248,29 +248,52 @@ void* run_gpu_cruncher_thread(void *ptr) {
     ret_iferr(errcode, "failed to get first buffer");
     uint32_t src_idx = 0;
 
-    // Double-buffer indices
-    int gpu_buf = 0;   // buffer with kernel running (or just finished)
-    int cpu_buf = 1;   // buffer being prepared/uploaded
+    // Triple-buffer state:
+    // - gpu_buf: kernel currently running
+    // - read_buf: async read in progress (from previous kernel)
+    // - prep_buf: buffer ready to be prepared (read completed)
+    int gpu_buf = -1;   // no kernel running yet
+    int read_buf = -1;  // no read in progress yet
+    int next_buf = 0;   // next buffer to launch
 
     cl_event kernel_event = NULL;
+    cl_event read_event = NULL;
     uint64_t kernel_start_time = 0;
     uint64_t kernel_num_anas = 0;
-    bool kernel_running = false;
-    bool first_iteration = true;
+    uint32_t buf_tasks[3] = {0, 0, 0};
 
-    // Bootstrap: prepare cpu_buf
-    uint32_t cpu_tasks = prepare_task_buffer(ctx, ctx->host_tasks[cpu_buf], &src_buf, &src_idx);
-    if (cpu_tasks == 0) goto done;
+    // Bootstrap: prepare all 3 buffers
+    buf_tasks[0] = prepare_task_buffer(ctx, ctx->host_tasks[0], &src_buf, &src_idx);
+    if (buf_tasks[0] == 0) goto done;
+    buf_tasks[1] = prepare_task_buffer(ctx, ctx->host_tasks[1], &src_buf, &src_idx);
+    buf_tasks[2] = prepare_task_buffer(ctx, ctx->host_tasks[2], &src_buf, &src_idx);
+    // buf_tasks[1] and [2] may be 0, that's fine
 
     while (1) {
-        // Phase 1: Upload cpu_buf (while previous kernel may still run)
-        errcode = clEnqueueWriteBuffer(ctx->queue, ctx->mem_tasks[cpu_buf], CL_FALSE, 0,
-                                       cpu_tasks * sizeof(permut_task),
-                                       ctx->host_tasks[cpu_buf]->permut_tasks, 0, NULL, NULL);
-        ret_iferr(errcode, "failed to upload tasks");
+        int cur = next_buf;
 
-        // Phase 2: Wait for previous kernel on gpu_buf (if any)
-        if (kernel_running) {
+        // Phase 1: If we have a pending read, wait for it to complete
+        if (read_buf >= 0) {
+            errcode = clWaitForEvents(1, &read_event);
+            ret_iferr(errcode, "failed to wait for read");
+            clReleaseEvent(read_event);
+            read_event = NULL;
+
+            // Prepare read_buf (its data is now available)
+            buf_tasks[read_buf] = prepare_task_buffer(ctx, ctx->host_tasks[read_buf], &src_buf, &src_idx);
+            read_buf = -1;
+        }
+
+        // Phase 2: Upload current buffer (async, while kernel may still run)
+        if (buf_tasks[cur] > 0) {
+            errcode = clEnqueueWriteBuffer(ctx->queue, ctx->mem_tasks[cur], CL_FALSE, 0,
+                                           buf_tasks[cur] * sizeof(permut_task),
+                                           ctx->host_tasks[cur]->permut_tasks, 0, NULL, NULL);
+            ret_iferr(errcode, "failed to upload tasks");
+        }
+
+        // Phase 3: Wait for previous kernel to finish (if any)
+        if (gpu_buf >= 0) {
             errcode = clFinish(ctx->queue);
             ret_iferr(errcode, "failed to wait for kernel");
 
@@ -281,61 +304,50 @@ void* run_gpu_cruncher_thread(void *ptr) {
             ctx->task_calculated_anas[ctx->times_idx] = kernel_num_anas;
             ctx->times_idx = (ctx->times_idx + 1) % TIMES_WINDOW_LENGTH;
             clReleaseEvent(kernel_event);
-            kernel_running = false;
+            kernel_event = NULL;
 
             errcode = gpu_cruncher_ctx_refresh_hashes_reversed(ctx);
             ret_iferr(errcode, "failed to refresh hashes_reversed");
 
-            // Phase 3: Read gpu_buf (just finished) - SYNCHRONOUS to ensure data ready for prepare
+            // Phase 4: Start async read of gpu_buf (just finished)
             uint32_t gpu_tasks = ctx->host_tasks[gpu_buf]->num_tasks;
             if (gpu_tasks > 0) {
-                errcode = clEnqueueReadBuffer(ctx->queue, ctx->mem_tasks[gpu_buf], CL_TRUE, 0,
+                errcode = clEnqueueReadBuffer(ctx->queue, ctx->mem_tasks[gpu_buf], CL_FALSE, 0,
                                               gpu_tasks * sizeof(permut_task),
-                                              ctx->host_tasks[gpu_buf]->permut_tasks, 0, NULL, NULL);
-                ret_iferr(errcode, "failed to read tasks");
+                                              ctx->host_tasks[gpu_buf]->permut_tasks, 0, NULL, &read_event);
+                ret_iferr(errcode, "failed to start read tasks");
+                read_buf = gpu_buf;
             }
         }
 
-        // Phase 4: Launch kernel on cpu_buf
+        // Check if we have work to do
+        if (buf_tasks[cur] == 0) {
+            // No more work - wait for any pending read
+            if (read_buf >= 0) {
+                clWaitForEvents(1, &read_event);
+                clReleaseEvent(read_event);
+            }
+            break;
+        }
+
+        // Phase 5: Launch kernel on current buffer
         uint32_t iters = MAX_ITERS_IN_KERNEL_TASK;
-        errcode = clSetKernelArg(ctx->kernel, 0, sizeof(cl_mem), &ctx->mem_tasks[cpu_buf]);
+        errcode = clSetKernelArg(ctx->kernel, 0, sizeof(cl_mem), &ctx->mem_tasks[cur]);
         errcode |= clSetKernelArg(ctx->kernel, 1, sizeof(iters), &iters);
         errcode |= clSetKernelArg(ctx->kernel, 2, sizeof(cl_mem), &ctx->mem_hashes);
         errcode |= clSetKernelArg(ctx->kernel, 3, sizeof(ctx->hashes_num), &ctx->hashes_num);
         errcode |= clSetKernelArg(ctx->kernel, 4, sizeof(cl_mem), &ctx->mem_hashes_reversed);
         ret_iferr(errcode, "failed to set kernel args");
 
-        size_t global_size = cpu_tasks;
+        size_t global_size = buf_tasks[cur];
         kernel_start_time = current_micros();
         errcode = clEnqueueNDRangeKernel(ctx->queue, ctx->kernel, 1, NULL, &global_size, NULL, 0, NULL, &kernel_event);
         ret_iferr(errcode, "failed to enqueue kernel");
-        kernel_num_anas = ctx->host_tasks[cpu_buf]->num_anas;
-        kernel_running = true;
+        kernel_num_anas = ctx->host_tasks[cur]->num_anas;
+        gpu_buf = cur;
 
-        // Phase 5: Swap buffers
-        int tmp = gpu_buf;
-        gpu_buf = cpu_buf;
-        cpu_buf = tmp;
-
-        // Phase 6: Prepare cpu_buf (old gpu_buf) for next iteration
-        // On first iteration, cpu_buf (old gpu_buf) hasn't run yet, so skip
-        // After first iteration, cpu_buf has fresh data from the read in Phase 3
-        if (!first_iteration) {
-            cpu_tasks = prepare_task_buffer(ctx, ctx->host_tasks[cpu_buf], &src_buf, &src_idx);
-            if (cpu_tasks == 0) {
-                // No more work - wait for current kernel and exit
-                clFinish(ctx->queue);
-                break;
-            }
-        } else {
-            // First iteration: prepare cpu_buf from scratch
-            cpu_tasks = prepare_task_buffer(ctx, ctx->host_tasks[cpu_buf], &src_buf, &src_idx);
-            first_iteration = false;
-            if (cpu_tasks == 0) {
-                clFinish(ctx->queue);
-                break;
-            }
-        }
+        // Phase 6: Advance to next buffer
+        next_buf = (next_buf + 1) % 3;
     }
 
 done:
