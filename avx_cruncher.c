@@ -167,16 +167,18 @@ static int construct_string(permut_task *task, uint32_t *key) {
             off = task->a[off - 1] - 1;
         }
 
+        /* Add space before word (except first) */
+        if (wcs > 0) {
+            dst[wcs++] = ' ';
+        }
+
         /* Find word length and copy with memcpy */
         const char *word = &task->all_strs[(uint8_t)off];
         int len = 0;
         while (word[len]) len++;
         memcpy(dst + wcs, word, len);
         wcs += len;
-        dst[wcs] = ' ';
-        wcs++;
     }
-    wcs--;  /* remove trailing space */
 
     /* MD5 padding */
     dst[wcs] = (char)0x80;

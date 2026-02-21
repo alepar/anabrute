@@ -129,7 +129,7 @@ int recurse_combs(cpu_cruncher_ctx* ctx, char *all_strs, string_idx_and_count si
 int recurse_string_combs(cpu_cruncher_ctx* ctx, stack_item *stack, int stack_len, int stack_idx, int string_idx, string_and_count *scs, int scs_idx) {
     int errcode=0;
     if (stack_idx >= stack_len) {
-        string_idx_and_count sics[scs_idx];
+        string_idx_and_count sics[scs_idx > 0 ? scs_idx : 1];
 
         uint8_t strs_count = 0;
         for (int i=0; i<scs_idx; i++) {

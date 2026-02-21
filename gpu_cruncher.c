@@ -53,9 +53,11 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
     ctx->hashes_num = hashes_num;
     ctx->last_refresh_hashes_reversed_millis = current_micros()/1000;
 
-    memset(ctx->task_times_starts, 0, TIMES_WINDOW_LENGTH*sizeof(uint64_t));
-    memset(ctx->task_times_ends, 0, TIMES_WINDOW_LENGTH*sizeof(uint64_t));
-    memset(ctx->task_calculated_anas, 0, TIMES_WINDOW_LENGTH*sizeof(uint64_t));
+    for (int i = 0; i < TIMES_WINDOW_LENGTH; i++) {
+        ctx->task_times_starts[i] = 0;
+        ctx->task_times_ends[i] = 0;
+        ctx->task_calculated_anas[i] = 0;
+    }
     ctx->times_idx = 0;
 
     cl_int errcode;
@@ -84,7 +86,8 @@ cl_int gpu_cruncher_ctx_create(gpu_cruncher_ctx *ctx, cl_platform_id platform_id
     }
     ret_iferr(errcode, "failed to build program");
 
-    ctx->queue = clCreateCommandQueue(ctx->cl_ctx, ctx->device_id, NULL, &errcode);
+    cl_queue_properties queue_props[] = {0};
+    ctx->queue = clCreateCommandQueueWithProperties(ctx->cl_ctx, ctx->device_id, queue_props, &errcode);
     ret_iferr(errcode, "failed to create queue");
 
     ctx->local_hashes_reversed = malloc(hashes_num * MAX_STR_LENGTH);
