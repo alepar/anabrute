@@ -13,9 +13,13 @@ static bool cpu_has_avx512f(void) {
 }
 #endif
 
+/* Which SIMD path to use for MD5 hashing */
+typedef enum { SIMD_AVX512, SIMD_AVX2, SIMD_SCALAR } simd_mode;
+
 /* Context for one CPU cruncher thread */
 typedef struct {
     cruncher_config *cfg;
+    simd_mode mode;
     volatile bool is_running;
     volatile uint64_t consumed_bufs;
     volatile uint64_t consumed_anas;
@@ -624,7 +628,7 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
     cruncher_config *cfg = actx->cfg;
 
 #if defined(__x86_64__) || defined(_M_AMD64)
-    if (cpu_has_avx512f()) {
+    if (actx->mode == SIMD_AVX512) {
         /* --- AVX-512 path (16-lane, SoA key layout) --- */
         uint32_t wimg[MAX_STR_LENGTH][11];
         uint8_t wlen_sp[MAX_STR_LENGTH];
@@ -658,7 +662,7 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
         return;
     }
     /* --- AVX2 path (8-lane, SoA key layout) --- */
-    {
+    if (actx->mode == SIMD_AVX2) {
         uint32_t wimg[MAX_STR_LENGTH][11];
         uint8_t wlen_sp[MAX_STR_LENGTH];
         int num_offsets;
@@ -688,8 +692,10 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
                     keys[w][i] = keys[w][batch - 1];
             md5_check_avx2(cfg, keys, wcs_arr, batch);
         }
+        return;
     }
-#else
+#endif
+    /* --- Scalar fallback --- */
     do {
         uint32_t key[16];
         int wcs = construct_string(task, key);
@@ -697,7 +703,6 @@ static void process_task(avx_cruncher_ctx *actx, permut_task *task) {
         md5_scalar(key, hash);
         check_hashes(cfg, hash, key, wcs);
     } while (heap_next(task));
-#endif
 }
 
 /* ---------- Vtable functions ---------- */
@@ -730,15 +735,28 @@ static uint32_t scalar_probe(void) {
     return cores;
 }
 
-static int avx_create(void *ctx, cruncher_config *cfg, uint32_t instance_id) {
+static int avx_create_with_mode(void *ctx, cruncher_config *cfg, uint32_t instance_id, simd_mode mode) {
     avx_cruncher_ctx *actx = ctx;
     actx->cfg = cfg;
+    actx->mode = mode;
     actx->is_running = false;
     actx->consumed_bufs = 0;
     actx->consumed_anas = 0;
     actx->task_time_start = 0;
     actx->task_time_end = 0;
     return 0;
+}
+
+static int avx512_create(void *ctx, cruncher_config *cfg, uint32_t instance_id) {
+    return avx_create_with_mode(ctx, cfg, instance_id, SIMD_AVX512);
+}
+
+static int avx2_create(void *ctx, cruncher_config *cfg, uint32_t instance_id) {
+    return avx_create_with_mode(ctx, cfg, instance_id, SIMD_AVX2);
+}
+
+static int scalar_create(void *ctx, cruncher_config *cfg, uint32_t instance_id) {
+    return avx_create_with_mode(ctx, cfg, instance_id, SIMD_SCALAR);
 }
 
 static void *avx_run(void *ctx) {
@@ -802,7 +820,7 @@ static int avx_destroy(void *ctx) {
 cruncher_ops avx512_cruncher_ops = {
     .name = "avx512",
     .probe = avx512_probe,
-    .create = avx_create,
+    .create = avx512_create,
     .run = avx_run,
     .get_stats = avx_get_stats,
     .get_total_anas = avx_get_total_anas,
@@ -814,7 +832,7 @@ cruncher_ops avx512_cruncher_ops = {
 cruncher_ops avx2_cruncher_ops = {
     .name = "avx2",
     .probe = avx2_probe,
-    .create = avx_create,
+    .create = avx2_create,
     .run = avx_run,
     .get_stats = avx_get_stats,
     .get_total_anas = avx_get_total_anas,
@@ -826,7 +844,7 @@ cruncher_ops avx2_cruncher_ops = {
 cruncher_ops scalar_cruncher_ops = {
     .name = "cpu",
     .probe = scalar_probe,
-    .create = avx_create,
+    .create = scalar_create,
     .run = avx_run,
     .get_stats = avx_get_stats,
     .get_total_anas = avx_get_total_anas,

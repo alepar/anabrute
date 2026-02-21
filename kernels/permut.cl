@@ -15,7 +15,8 @@
  * 3. http://people.eku.edu/styere/Encrypt/JS-MD5.html
  * 4. http://en.wikipedia.org/wiki/MD5#Algorithm */
 
-#pragma OPENCL EXTENSION cl_khr_byte_addressable_store : disable
+// #pragma OPENCL EXTENSION cl_khr_byte_addressable_store : disable
+// Disabled for PoCL compatibility — CPU supports byte-addressable stores natively
 
 /* Macros for reading/writing chars from int32's (from rar_kernel.cl) */
 #define GETCHAR(buf, index) (((uchar*)(buf))[(index)])
@@ -143,59 +144,36 @@ typedef struct permut_task_s {
     uint iters_done;
 } permut_task;
 
-ulong fact(uchar x) {
-    switch(x) {
-        case 0: 	return 1L;
-        case 1: 	return 1L;
-        case 2: 	return 2L;
-        case 3: 	return 6L;
-        case 4: 	return 24L;
-        case 5: 	return 120L;
-        case 6: 	return 720L;
-        case 7: 	return 5040L;
-        case 8: 	return 40320L;
-        case 9: 	return 362880L;
-        case 10: 	return 3628800L;
-        case 11: 	return 39916800L;
-        case 12: 	return 479001600L;
-        case 13: 	return 6227020800L;
-        case 14: 	return 87178291200L;
-        case 15: 	return 1307674368000L;
-        case 16: 	return 20922789888000L;
-        case 17: 	return 355687428096000L;
-        case 18: 	return 6402373705728000L;
-        case 19: 	return 121645100408832000L;
-        case 20: 	return 2432902008176640000L;
-        default:    return 0L;
-    }
-}
+// fact() removed — not used by kernel, and PoCL 3.x miscompiles
+// when any function in the compilation unit contains return statements.
 
-__kernel void permut(__global const permut_task *tasks, const uint iters_per_task, __global const uint *hashes, const uint hashes_num, __global uint *hashes_reversed) {
-    ulong id = get_global_id(0);
+__kernel void permut(__global permut_task *tasks, const uint iters_per_task, __global const uint *hashes, const uint hashes_num, __global uint *hashes_reversed) {
+    uint id = get_global_id(0);
 
     permut_task task;
 
-    // reading as uints for speec
-    for (uchar i=0; i<sizeof(permut_task)/4; i++) {
-        *(((uint*)&task)+i) = *(((__global uint*)(tasks+id))+i);
+    // reading as uints for speed
+    for (uint xi=0; xi<sizeof(permut_task)/4; xi++) {
+        *(((uint*)&task)+xi) = *(((__global uint*)(tasks+id))+xi);
     }
 
-    if (task.i >= task.n) { // this task is already completed
-        return;
-    }
+    // NOTE: no early return here — PoCL 3.x hangs when a conditional branch
+    // precedes nested for+while loops (work-group loop transformation bug).
+    // The Heap's loop handles the "already completed" case (i >= n) naturally.
 
     uint key[16];  // stores constructed string for md5 calculation
 
     uint iter_counter=0;
     uint computed_hash[4];
-    main: while (iter_counter < iters_per_task) {
-        for (uchar ik=0; ik<16; ik++) {
+    uint has_permutation = 1;
+    while (has_permutation && iter_counter < iters_per_task) {
+        for (int ik=0; ik<16; ik++) {
             key[ik] = 0;
         }
         // construct key
-        uchar wcs=0;
-        for (uchar io=0; task.offsets[io]; io++) {
-            char off = task.offsets[io];
+        int wcs=0;
+        for (int io=0; task.offsets[io]; io++) {
+            int off = task.offsets[io];
             if (off < 0) {
                 off = -off-1;
             } else {
@@ -220,9 +198,9 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
 
         // is hash a match?
         //TODO copy hashes to local mem? or screw it?
-        for(uchar ih=0; ih<hashes_num; ih++) {
-            uchar match = 1;
-            for(uchar ihj=0; ihj<4; ihj++) {
+        for(uint ih=0; ih<hashes_num; ih++) {
+            uint match = 1;
+            for(uint ihj=0; ihj<4; ihj++) {
                 if(hashes[4*ih+ihj] != computed_hash[ihj]) {
                     match = 0;
                     break;
@@ -231,7 +209,7 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
 
             if (match) {
                 PUTCHAR(key, wcs, 0);
-                for (uchar ihr=0; ihr<MAX_STR_LENGTH/4; ihr++) {
+                for (uint ihr=0; ihr<MAX_STR_LENGTH/4; ihr++) {
                     hashes_reversed[ih*(MAX_STR_LENGTH/4)+ihr]=key[ihr];
                 }
                 break;
@@ -239,7 +217,7 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
         }
 
         // find next permut if possible
-
+        has_permutation = 0;
         while (task.i < task.n) {
             if (task.c[task.i] < task.i) {
                 if (task.i%2 == 0) {
@@ -255,23 +233,21 @@ __kernel void permut(__global const permut_task *tasks, const uint iters_per_tas
                 task.c[task.i]++;
                 task.i = 0;
                 iter_counter++;
-                goto main; // consume generated permutation
+                has_permutation = 1;
+                break; // consume generated permutation
             } else {
                 task.c[task.i] = 0;
                 task.i++;
             }
         }
-
-        // no permutations left, exiting
-        break;
     }
 
     task.iters_done += iter_counter;
 
     // write out state (to resume or signal completion)
     // skip offsets and all_strs, as those never change
-    for (uchar i=MAX_STR_LENGTH/4+MAX_OFFSETS_LENGTH/4; i<sizeof(permut_task)/4; i++) {
-        *(((__global uint*)(tasks+id))+i) = *(((uint*)&task)+i);
+    for (uint xi=MAX_STR_LENGTH/4+MAX_OFFSETS_LENGTH/4; xi<sizeof(permut_task)/4; xi++) {
+        *(((__global uint*)(tasks+id))+xi) = *(((uint*)&task)+xi);
     }
 
 }

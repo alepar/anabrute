@@ -53,6 +53,11 @@ int main(int argc, char **argv) {
     int num_buffers = 4;
     int n_words = 4;
 
+    const char *backend_name = NULL;
+    if (argc > 1 && argv[1][0] == '-') {
+        backend_name = argv[1] + 1;  /* skip the dash */
+        argc--; argv++;
+    }
     if (argc > 1) num_threads = atoi(argv[1]);
     if (argc > 2) num_buffers = atoi(argv[2]);
     if (argc > 3) n_words = atoi(argv[3]);
@@ -84,6 +89,14 @@ int main(int argc, char **argv) {
     pthread_t *threads = calloc(num_threads, sizeof(pthread_t));
 
     cruncher_ops *ops = &avx2_cruncher_ops;
+    if (backend_name) {
+        if (strcmp(backend_name, "avx512") == 0) ops = &avx512_cruncher_ops;
+        else if (strcmp(backend_name, "avx2") == 0) ops = &avx2_cruncher_ops;
+        else if (strcmp(backend_name, "scalar") == 0) ops = &scalar_cruncher_ops;
+        else { fprintf(stderr, "Unknown backend: %s\n", backend_name); return 1; }
+    }
+    uint32_t probe_count = ops->probe();
+    if (!probe_count) { fprintf(stderr, "Backend %s not available\n", ops->name); return 1; }
 
     for (int i = 0; i < num_threads; i++) {
         ctxs[i] = calloc(1, ops->ctx_size);
