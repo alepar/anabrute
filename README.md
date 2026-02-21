@@ -1,6 +1,31 @@
 # Trustpilot Backend challenge
 Problem definition [here](https://followthewhiterabbit.trustpilot.com/cs/step3.html)
 
+# Prerequisites
+
+### Linux
+```bash
+# Debian/Ubuntu
+sudo apt install build-essential cmake
+
+# Fedora
+sudo dnf install gcc make cmake
+```
+
+For GPU support, also install the OpenCL development package:
+```bash
+sudo apt install ocl-icd-opencl-dev   # Debian/Ubuntu
+sudo dnf install ocl-icd-devel        # Fedora
+```
+This provides the OpenCL headers and ICD loader library. Your GPU driver (NVIDIA/AMD) provides the runtime, but CMake needs these dev files to enable GPU support at compile time.
+
+### macOS
+```bash
+xcode-select --install
+brew install cmake
+```
+Metal backend is used automatically on Apple Silicon. OpenCL is available but deprecated.
+
 # Latest Benchmarks
 
 ### Mac M2 Max
