@@ -15,7 +15,7 @@ find_package(OpenCL QUIET)
 
 if(OpenCL_FOUND)
     message(STATUS "OpenCL found: ${OpenCL_LIBRARY}")
-    add_compile_definitions(HAVE_OPENCL)
+    add_compile_definitions(HAVE_OPENCL CL_TARGET_OPENCL_VERSION=300)
 else()
     message(STATUS "OpenCL NOT found — OpenCL backend disabled, skipping kernel_debug target")
 endif()
