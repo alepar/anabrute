@@ -28,13 +28,16 @@ endif()
 # suppress int-to-pointer warnings from ret_iferr macro in void* functions (known bug)
 add_compile_options(-Wno-int-conversion)
 
-# Enable AVX2 for avx_cruncher.c on x86_64
+# Enable AVX2/AVX512 for SIMD cruncher files on x86_64
+# avx_cruncher_avx512.c is a separate TU so that -mavx512f doesn't leak
+# AVX-512 auto-vectorization into non-AVX512 code paths.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2 -mavx512f")
+    set_source_files_properties(avx_cruncher.c PROPERTIES COMPILE_FLAGS "-mavx2")
+    set_source_files_properties(avx_cruncher_avx512.c PROPERTIES COMPILE_FLAGS "-mavx2 -mavx512f")
 endif()
 
 # === Main binary (works with or without OpenCL) ===
-add_executable (anabrute main.c opencl_cruncher.c gpu_cruncher.c avx_cruncher.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
+add_executable (anabrute main.c opencl_cruncher.c gpu_cruncher.c avx_cruncher.c avx_cruncher_avx512.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
 set_property(TARGET anabrute PROPERTY C_STANDARD 99)
 target_include_directories (anabrute PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries (anabrute pthread m)
@@ -48,7 +51,7 @@ endif()
 
 # === kernel_debug (requires OpenCL) ===
 if(OpenCL_FOUND)
-    add_executable (kernel_debug kernel_debug.c opencl_cruncher.c gpu_cruncher.c avx_cruncher.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
+    add_executable (kernel_debug kernel_debug.c opencl_cruncher.c gpu_cruncher.c avx_cruncher.c avx_cruncher_avx512.c hashes.c dict.c permut_types.c seedphrase.c fact.c cpu_cruncher.c os.c task_buffers.c)
     set_property(TARGET kernel_debug PROPERTY C_STANDARD 99)
     target_include_directories (kernel_debug PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries (kernel_debug pthread)
@@ -69,7 +72,7 @@ target_compile_options(bench_enum PRIVATE -O2)
 
 # bench_avx and bench_breakdown use AVX2/AVX512 intrinsics — x86_64 only
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    add_executable(bench_avx bench_avx.c avx_cruncher.c task_buffers.c hashes.c permut_types.c seedphrase.c fact.c os.c)
+    add_executable(bench_avx bench_avx.c avx_cruncher.c avx_cruncher_avx512.c task_buffers.c hashes.c permut_types.c seedphrase.c fact.c os.c)
     set_property(TARGET bench_avx PROPERTY C_STANDARD 99)
     target_include_directories(bench_avx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(bench_avx pthread)
@@ -109,7 +112,7 @@ target_link_libraries(test_cpu_enumeration pthread)
 add_test(NAME cpu_enumeration COMMAND test_cpu_enumeration)
 
 add_executable(test_cruncher tests/test_cruncher.c
-    opencl_cruncher.c gpu_cruncher.c avx_cruncher.c task_buffers.c hashes.c permut_types.c seedphrase.c fact.c os.c)
+    opencl_cruncher.c gpu_cruncher.c avx_cruncher.c avx_cruncher_avx512.c task_buffers.c hashes.c permut_types.c seedphrase.c fact.c os.c)
 set_property(TARGET test_cruncher PROPERTY C_STANDARD 99)
 target_include_directories(test_cruncher PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(APPLE)
